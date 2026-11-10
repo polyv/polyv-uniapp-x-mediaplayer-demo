@@ -1,0 +1,133 @@
+<template>
+  <scroll-view class="page">
+    <text class="tip">模拟客户业务后台：在本机运行 scripts/play-token-server，把地址填在下面，点「取播放 token」。secretKey 只留在该服务，不进 App。服务不可用时，仍可手动粘贴播放 token。</text>
+    <text class="label">业务服务地址</text>
+    <input class="input" v-model="bizBase" placeholder="http://192.168.x.x:8787" />
+    <button size="mini" @click="saveBizBase">保存业务服务地址</button>
+    <text class="label">vid</text>
+    <input class="input" v-model="vid" placeholder="视频 vid" />
+    <text class="label">viewerId（可选）</text>
+    <input class="input" v-model="viewerId" placeholder="观众 ID" />
+    <button size="mini" @click="fetchPlayToken">取播放 token</button>
+    <text class="label">播放 token</text>
+    <textarea class="textarea" v-model="token" placeholder="服务端返回的播放 token，或手动粘贴" :maxlength="-1" />
+    <button type="primary" @click="savePlayToken">保存播放凭证</button>
+    <text class="log">{{ log }}</text>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  import { plvBizBaseUrl, plvEnsurePlayToken, plvSaveBizBaseUrl } from '@/common/plv-biz-token.uts'
+
+  export default {
+    data() {
+      return {
+        bizBase: '',
+        vid: '',
+        token: '',
+        viewerId: '',
+        log: '',
+        fetching: false,
+        active: true
+      }
+    },
+    onUnload() {
+      this.active = false
+    },
+    onLoad() {
+      this.bizBase = plvBizBaseUrl()
+      const vid = uni.getStorageSync('plv_play_vid')
+      const token = uni.getStorageSync('plv_play_token')
+      const viewerId = uni.getStorageSync('plv_play_viewer_id')
+      if (vid != null) {
+        this.vid = '' + vid
+      }
+      if (token != null) {
+        this.token = '' + token
+      }
+      if (viewerId != null) {
+        this.viewerId = '' + viewerId
+      }
+    },
+    methods: {
+      saveBizBase() {
+        plvSaveBizBaseUrl(this.bizBase)
+        this.bizBase = plvBizBaseUrl()
+        this.log = this.bizBase.length > 0 ? '业务服务地址已保存' : '已清空业务服务地址，播放时使用手动 token'
+      },
+      fetchPlayToken() {
+        if (this.fetching) {
+          this.log = '正在向业务服务取播放 token，请稍候'
+          return
+        }
+        const vid = this.vid.trim()
+        if (this.bizBase.trim().length === 0) {
+          this.log = '未配置业务服务地址，请手动粘贴播放 token'
+          return
+        }
+        if (vid.length === 0) {
+          this.log = '请填写 vid'
+          return
+        }
+        this.vid = vid
+        plvSaveBizBaseUrl(this.bizBase)
+        this.bizBase = plvBizBaseUrl()
+        const base = this.bizBase
+        const viewerId = this.viewerId
+        this.fetching = true
+        this.log = '正在向业务服务取播放 token'
+        const self = this
+        plvEnsurePlayToken(vid, viewerId, function (token : string, err : string, _playViewerId : string) {
+          if (!self.active) return
+          self.fetching = false
+          if (self.vid != vid || self.viewerId != viewerId || self.bizBase != base || plvBizBaseUrl() != base) {
+            self.log = '请求期间播放配置已更改，请重新取 token'
+            return
+          }
+          if (err.length > 0 || token.length === 0) {
+            const detail = err.length > 0 ? err : '业务服务没有返回 token'
+            self.log = detail + '。可手动粘贴播放 token'
+            return
+          }
+          self.token = token
+          self.log = '已取到播放 token，可保存此凭证'
+        })
+      },
+      savePlayToken() {
+        const vid = this.vid
+        const token = this.token
+        if (vid.length === 0 || token.length === 0) {
+          this.log = '请填写 vid 和播放 token'
+          return
+        }
+        uni.setStorageSync('plv_play_vid', vid)
+        uni.setStorageSync('plv_play_token', token)
+        uni.setStorageSync('plv_play_viewer_id', this.viewerId)
+        this.log = '播放凭证已保存，播放时按 VID 和 viewerId 使用'
+      }
+    }
+  }
+</script>
+
+<style>
+  .page { padding: 12px; }
+  .tip { font-size: 12px; color: #666; margin-bottom: 12px; line-height: 1.4; }
+  .label { font-size: 13px; margin-top: 8px; margin-bottom: 4px; }
+  .input {
+    border-width: 1px;
+    border-color: #dddddd;
+    padding: 8px;
+    margin-bottom: 8px;
+    background-color: #ffffff;
+  }
+  .textarea {
+    border-width: 1px;
+    border-color: #dddddd;
+    padding: 8px;
+    margin-bottom: 8px;
+    background-color: #ffffff;
+    height: 90px;
+    font-size: 12px;
+  }
+  .log { margin-top: 16px; font-size: 12px; color: #333; }
+</style>

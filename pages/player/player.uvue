@@ -1,0 +1,258 @@
+<template>
+  <scroll-view class="page">
+    <!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
+    <plv-player
+      ref="sessionPlayer"
+      class="native-player"
+      :settings="sessionSettings"
+      @view-init="onSessionReady"
+      @play-status="onSessionStatus"
+      @position-change="onSessionPosition"
+      @play-error="onSessionError"
+      @session-error="onCommandError"
+    />
+    <!-- #endif -->
+    <text class="mode-tag">bridge: native (standard mode)</text>
+    <text class="tip">模拟客户业务后台。已配置服务地址时，setVid 会先按 vid 取 token，再设置凭证并播放。手动粘贴的 token 只在服务不可用时兜底。</text>
+    <text class="mode-tag">{{ bizBase.length > 0 ? ('业务服务：' + bizBase) : '业务服务：未配置，使用手动 token' }}</text>
+
+    <text class="label">vid</text>
+    <input class="input" v-model="vid" placeholder="vid" />
+    <text class="label">播放 token</text>
+    <textarea class="textarea" v-model="token" placeholder="服务端返回的播放 token" :maxlength="-1" />
+    <text class="label">viewerId（可选）</text>
+    <input class="input" v-model="viewerId" placeholder="观众 ID" />
+    <view class="row wrap">
+      <button size="mini" type="primary" @click="savePlayToken">设置播放凭证</button>
+      <button size="mini" type="primary" @click="setVid">setVid</button>
+      <button size="mini" type="primary" @click="start">start</button>
+      <button size="mini" @click="pause">pause</button>
+      <button size="mini" @click="stop">stop</button>
+      <button size="mini" @click="seek">seek+10s</button>
+    </view>
+
+    <text class="log">{{ log }}</text>
+    <text class="events">状态 {{ latestStatus }}</text>
+    <text class="events">错误 {{ latestError }}</text>
+    <text class="events">进度 {{ latestPosition }}</text>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+  import {
+    PlvMediaSource, PlvSessionSuccess, PlvMediaPlayerFail, PlvPlayerEvent, PlvSessionSettingsPatch, PlvViewerPatch
+  } from '@/uni_modules/plv-media-player'
+  import {
+    PlvComponentSessionOptions, PlvComponentSetMediaOptions, PlvComponentSeekToOptions
+  } from '@/uni_modules/plv-media-player/components/plv-player/commandOptions.uts'
+  // #endif
+  import { plvBizBaseUrl, plvEnsurePlayToken, plvSaveBizBaseUrl, plvViewerIdOrDefault } from '@/common/plv-biz-token.uts'
+
+  export default {
+    data() {
+      return {
+        // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+        sessionId: '',
+        sessionSettings: {autoPlay: false} as PlvSessionSettingsPatch,
+        requestEpoch: 0,
+        // #endif
+        vid: '',
+        token: '',
+        viewerId: '',
+        log: '先设置播放凭证，再 setVid / start',
+        latestStatus: '',
+        latestError: '',
+        latestPosition: '',
+        position: 0.0,
+        autoStart: false,
+        bizBase: ''
+      }
+    },
+    onLoad(options : OnLoadOptions) {
+      const storedVid = uni.getStorageSync('plv_play_vid')
+      const storedToken = uni.getStorageSync('plv_play_token')
+      const storedViewer = uni.getStorageSync('plv_play_viewer_id')
+      if (storedVid != null) {
+        this.vid = '' + storedVid
+      }
+      if (storedToken != null) {
+        this.token = '' + storedToken
+      }
+      if (storedViewer != null) {
+        this.viewerId = '' + storedViewer
+      }
+      const vid = options['vid']
+      if (vid != null && ('' + vid).length > 0) {
+        this.vid = '' + vid
+      }
+      const qToken = options['token']
+      if (qToken != null && ('' + qToken).length > 0) {
+        this.token = '' + qToken
+      }
+      const qViewer = options['viewerId']
+      if (qViewer != null && ('' + qViewer).length > 0) {
+        this.viewerId = '' + qViewer
+      }
+      const auto = options['auto']
+      if (auto != null && ('' + auto) == '1') {
+        this.autoStart = true
+      }
+      const biz = options['biz']
+      if (biz != null && ('' + biz).length > 0) {
+        plvSaveBizBaseUrl('' + biz)
+      }
+      this.bizBase = plvBizBaseUrl()
+    },
+    onUnload() {
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      this.requestEpoch++
+      this.sessionId = ''
+      // #endif
+    },
+    methods: {
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      sessionPlayerRef(): PlvPlayerComponentPublicInstance | null {
+        return this.$refs['sessionPlayer'] as PlvPlayerComponentPublicInstance | null
+      },
+      onSessionReady(event: PlvPlayerEvent) {
+        this.sessionId = event.sessionId
+        if (this.autoStart) {
+          this.autoStart = false
+          this.setVid()
+        }
+      },
+      onSessionStatus(event: PlvPlayerEvent) {
+        this.latestStatus = event.detail.status ?? ''
+      },
+      onSessionPosition(event: PlvPlayerEvent) {
+        const position = event.detail.currentPosition
+        if (position == null) return
+        this.position = position
+        this.latestPosition = '' + position
+        console.log('[PLV-SMOKE] position ' + position)
+      },
+      onSessionError(event: PlvPlayerEvent) {
+        this.latestError = event.detail.error?.errMsg ?? ''
+      },
+      onCommandError(error: PlvMediaPlayerFail) {
+        this.log = error.errMsg
+      },
+      // #endif
+      rememberPlayToken() {
+        uni.setStorageSync('plv_play_vid', this.vid)
+        uni.setStorageSync('plv_play_token', this.token)
+        uni.setStorageSync('plv_play_viewer_id', this.viewerId)
+      },
+      savePlayToken() {
+        if (this.vid.length === 0 || this.token.length === 0) {
+          this.log = '请填写 vid 和播放 token'
+          return
+        }
+        this.rememberPlayToken()
+        // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+        this.log = '播放凭证已保存，将随媒体源提交'
+        // #endif
+      },
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      setVid() {
+        const player = this.sessionPlayerRef()
+        const id = this.sessionId
+        const vid = this.vid
+        const viewerId = plvViewerIdOrDefault(this.viewerId)
+        const manualToken = this.token
+        const base = plvBizBaseUrl()
+        const epoch = ++this.requestEpoch
+        if (player == null || id.length == 0 || vid.length == 0) {
+          this.log = player == null || id.length == 0 ? '播放器尚未就绪' : '请填写 vid'
+          return
+        }
+        const isCurrent = (): boolean => epoch == this.requestEpoch && this.sessionId == id &&
+          this.vid == vid && plvViewerIdOrDefault(this.viewerId) == viewerId && plvBizBaseUrl() == base
+        const load = (token: string, error: string) => {
+          if (!isCurrent()) return
+          if (token.length == 0) {
+            this.log = error
+            return
+          }
+          const viewer: PlvViewerPatch = {viewerId: viewerId}
+          const source: PlvMediaSource = {kind: 'vid', vid: vid, level: 0, token: token, viewer: viewer}
+          this.position = 0
+          this.latestError = ''
+          player.setMedia({
+            source: source,
+            success: (result: PlvSessionSuccess) => {
+              if (!isCurrent()) return
+              this.log = result.errMsg
+              player.start({expectedMediaGeneration: result.mediaGeneration,
+                fail: (failure: PlvMediaPlayerFail) => { if (isCurrent()) this.onCommandError(failure) }
+              } as PlvComponentSessionOptions)
+            },
+            fail: (failure: PlvMediaPlayerFail) => { if (isCurrent()) this.onCommandError(failure) }
+          } as PlvComponentSetMediaOptions)
+        }
+        if (base.length > 0) {
+          this.log = '正在向业务服务取播放 token'
+          plvEnsurePlayToken(vid, viewerId, (token: string, error: string, _playViewerId: string) => {
+            load(token, error)
+          })
+          return
+        }
+        load(manualToken, '请先填写播放 token，或在配置页填写业务服务地址')
+      },
+      start() {
+        this.sessionPlayerRef()?.start({fail: this.onCommandError} as PlvComponentSessionOptions)
+      },
+      pause() {
+        this.requestEpoch++
+        this.sessionPlayerRef()?.pause({fail: this.onCommandError} as PlvComponentSessionOptions)
+      },
+      stop() {
+        this.requestEpoch++
+        this.sessionPlayerRef()?.stop({fail: this.onCommandError} as PlvComponentSessionOptions)
+        this.position = 0
+      },
+      seek() {
+        this.sessionPlayerRef()?.seekTo({seconds: this.position + 10, fail: this.onCommandError} as PlvComponentSeekToOptions)
+      }
+      // #endif
+    }
+  }
+</script>
+
+<style>
+  .page { padding: 12px; }
+  .native-player {
+    width: 100%;
+    height: 200px;
+    background-color: #000000;
+  }
+  .mode-tag { font-size: 11px; color: #888888; margin-top: 4px; margin-bottom: 4px; }
+  .tip { font-size: 12px; color: #666666; margin-bottom: 8px; }
+  .label { font-size: 13px; margin-top: 4px; margin-bottom: 4px; }
+  .row { flex-direction: row; align-items: center; margin-bottom: 8px; }
+  .row.wrap { flex-wrap: wrap; }
+  .input {
+    border-width: 1px;
+    border-color: #dddddd;
+    padding: 8px;
+    margin-bottom: 8px;
+    background-color: #ffffff;
+  }
+  .textarea {
+    border-width: 1px;
+    border-color: #dddddd;
+    padding: 8px;
+    margin-bottom: 8px;
+    background-color: #ffffff;
+    height: 72px;
+    font-size: 12px;
+  }
+  .log, .events {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #333333;
+    lines: 8;
+  }
+  .events { color: #666666; }
+</style>

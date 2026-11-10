@@ -1,0 +1,28 @@
+# Install from the marketplace in the standalone public Demo.
+/uni_modules/plv-media-player/
+
+# Local settings and build output
+.DS_Store
+.hbuilderx/
+unpackage/
+node_modules/
+.idea/
+.gradle/
+**/build/
+**/Pods/
+**/DerivedData/
+
+# Local credentials and signing
+.env
+.env.*
+!.env.example
+*.p12
+*.mobileprovision
+*.pem
+*.jks
+*.keystore
+*.cer
+*.p7b
+*.log
+harmony-configs/build-profile.json5
+harmony-configs/config/

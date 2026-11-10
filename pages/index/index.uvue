@@ -1,0 +1,45 @@
+<template>
+  <scroll-view class="page" scroll-y="true">
+    <text class="title">PLV MediaPlayer Demo (uni-app x)</text>
+    <text class="hint">播放凭证由服务端签发后传入播放器。HBuilderX 4.61+，自定义基座 + 三端原生库。</text>
+    <button class="btn" type="primary" @click="go('config')">1. 播放凭证</button>
+    <button class="btn" type="primary" @click="go('player')">2. 播放</button>
+    <button class="btn" type="warn" @click="go('ext-feed')">3. Feed（短视频上下滑流）</button>
+  </scroll-view>
+</template>
+
+<script lang="uts">
+  export default {
+    methods: {
+      go(name : string) {
+        if (name === 'ext-feed') {
+          uni.navigateTo({ url: '/pages/ext-feed/ext-feed' })
+          return
+        }
+        uni.navigateTo({ url: '/pages/' + name + '/' + name })
+      }
+    }
+  }
+</script>
+
+<style>
+  .page {
+    flex: 1;
+    height: 100%;
+    padding: 12px;
+  }
+  .title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .hint {
+    font-size: 13px;
+    color: #666666;
+    margin-bottom: 16px;
+    line-height: 1.4;
+  }
+  .btn {
+    margin-bottom: 10px;
+  }
+</style>

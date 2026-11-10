@@ -1,0 +1,10 @@
+<script lang="uts">
+  export default {
+    onLaunch: function () {
+      console.log('[PLV] DemoX App Launch (uni-app x standard mode)')
+    }
+  }
+</script>
+
+<style>
+</style>

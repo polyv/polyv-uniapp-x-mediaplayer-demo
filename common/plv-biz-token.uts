@@ -1,0 +1,284 @@
+export type PlvBizPlayToken = {
+  vid : string
+  token : string
+  viewerId : string
+  requestViewer : string
+  serviceBase : string
+  expiredTime : number
+}
+
+const PLV_BIZ_BASE_KEY = 'plv_biz_base_url'
+const PLV_TOKEN_SKEW_MS = 60000
+
+let gCache : PlvBizPlayToken[] = []
+
+export function plvBizBaseUrl() : string {
+  return trimSlash(storedText(PLV_BIZ_BASE_KEY))
+}
+
+export function plvSaveBizBaseUrl(url : string) : void {
+  uni.setStorageSync(PLV_BIZ_BASE_KEY, trimSlash(url))
+}
+
+export function plvViewerIdOrDefault(viewerId : string) : string {
+  const text = viewerId.trim()
+  if (text.length > 0) {
+    return text
+  }
+  const stored = storedText('plv_play_viewer_id').trim()
+  if (stored.length > 0) {
+    return stored
+  }
+  return 'uniappx01'
+}
+
+export function plvManualTokenForVid(vid : string, viewerId : string = '') : string {
+  const storedViewer = plvViewerIdOrDefault(storedText('plv_play_viewer_id'))
+  if (storedText('plv_play_vid') != vid || plvViewerIdOrDefault(viewerId) != storedViewer) {
+    return ''
+  }
+  return storedText('plv_play_token')
+}
+
+export function plvCachedPlayToken(vid : string, viewerId : string = '') : string {
+  const hit = findFresh(vid, plvViewerIdOrDefault(viewerId), plvBizBaseUrl())
+  if (hit == null) {
+    return ''
+  }
+  return hit.token
+}
+
+export function plvEnsurePlayToken(vid : string, viewerId : string, done : (token : string, err : string, playViewerId : string) => void) : void {
+  const base = plvBizBaseUrl()
+  const viewer = plvViewerIdOrDefault(viewerId)
+  const fresh = findFresh(vid, viewer, base)
+  if (fresh != null) {
+    done(fresh.token, '', fresh.viewerId)
+    return
+  }
+  if (base.length == 0) {
+    const manual = plvManualTokenForVid(vid, viewer)
+    if (manual.length > 0) {
+      done(manual, '', viewer)
+      return
+    }
+    done('', '未配置业务服务地址', viewer)
+    return
+  }
+  const url = base + '/play-token?vid=' + encodeURIComponent(vid) + '&viewerId=' + encodeURIComponent(viewer)
+  try {
+    uni.request({
+      url: url,
+      method: 'GET',
+      timeout: 20000,
+      success: (res) => {
+        if (res.statusCode != 200) {
+          const message = messageOf(res.data)
+          finishFallback(vid, viewer, httpErrorText(url, res.statusCode, message), done)
+          return
+        }
+        const obj = asObject(res.data)
+        const item = readToken(obj, vid, viewer, base)
+        if (item == null) {
+          const message = messageOf(res.data)
+          const detail = message.length > 0 ? message : '业务服务没有返回 token'
+          finishFallback(vid, viewer, httpErrorText(url, res.statusCode, detail), done)
+          return
+        }
+        remember(item)
+        done(item.token, '', item.viewerId)
+      },
+      fail: (err) => {
+        finishFallback(vid, viewer, requestErrorText(url, err), done)
+      }
+    })
+  } catch (err) {
+    finishFallback(vid, viewer, requestErrorText(url, err), done)
+  }
+}
+
+export function plvWarmPlayTokens(vids : string[], viewerId : string, done : (okCount : number, err : string) => void) : void {
+  const base = plvBizBaseUrl()
+  if (base.length == 0 || vids.length == 0) {
+    done(0, '')
+    return
+  }
+  const viewer = plvViewerIdOrDefault(viewerId)
+  const pending : string[] = []
+  for (let i = 0; i < vids.length; i++) {
+    if (findFresh(vids[i], viewer, base) == null) {
+      pending.push(vids[i])
+    }
+  }
+  if (pending.length == 0) {
+    done(vids.length, '')
+    return
+  }
+  const url = base + '/play-token?vids=' + encodeURIComponent(pending.join(',')) + '&viewerId=' + encodeURIComponent(viewer)
+  try {
+    uni.request({
+      url: url,
+      method: 'GET',
+      timeout: 60000,
+      success: (res) => {
+        if (res.statusCode != 200 && res.statusCode != 502) {
+          done(0, httpErrorText(url, res.statusCode, messageOf(res.data)))
+          return
+        }
+        const obj = asObject(res.data)
+        let count = 0
+        if (obj != null) {
+          const items = obj['items']
+          if (items != null) {
+            const list = items as UTSJSONObject[]
+            for (let i = 0; i < list.length; i++) {
+              const item = readToken(list[i], '', viewer, base)
+              if (item != null && pending.includes(item.vid)) {
+                remember(item)
+                count++
+              }
+            }
+          }
+        }
+        const err = count == 0 ? httpErrorText(url, res.statusCode, messageOf(res.data)) : ''
+        done(count, err)
+      },
+      fail: (err) => {
+        done(0, requestErrorText(url, err))
+      }
+    })
+  } catch (err) {
+    done(0, requestErrorText(url, err))
+  }
+}
+
+function finishFallback(vid : string, viewer : string, err : string, done : (token : string, err : string, playViewerId : string) => void) : void {
+  const manual = plvManualTokenForVid(vid, viewer)
+  if (manual.length > 0) {
+    done(manual, err, '')
+    return
+  }
+  done('', err, '')
+}
+
+function httpErrorText(url : string, status : number, message : string) : string {
+  let text = '取播放凭证失败 ' + url + ' HTTP ' + status
+  if (message.length > 0) {
+    text = text + ' ' + message
+  }
+  return text
+}
+
+function requestErrorText(url : string, err : any | null) : string {
+  let code = ''
+  let message = '业务服务请求失败'
+  // Android uni.request 的 fail 实参是 RequestFailImpl（UniError），不是 UTSJSONObject。
+  // 直接 as UTSJSONObject 会在主线程抛 ClassCastException，回调中断后页面一直停在「正在向…」。
+  if (err != null) {
+    try {
+      const uniErr = err as UniError
+      const codeText = '' + uniErr.errCode
+      if (codeText.length > 0 && codeText != 'null') {
+        code = codeText
+      }
+      const msg = uniErr.errMsg
+      if (msg != null && msg.length > 0) {
+        message = msg
+      }
+    } catch (castErr) {
+      const text = '' + err
+      if (text.length > 0 && text != 'null' && text != '[object Object]') {
+        message = text
+      }
+    }
+  }
+  if (code.length == 0) {
+    return '取播放凭证失败 ' + url + ' ' + message
+  }
+  return '取播放凭证失败 ' + url + ' code=' + code + ' ' + message
+}
+
+function messageOf(data : any | null) : string {
+  const obj = asObject(data)
+  if (obj != null && obj['message'] != null) {
+    return '' + obj['message']
+  }
+  return ''
+}
+
+function findFresh(vid : string, viewer : string, base : string) : PlvBizPlayToken | null {
+  const now = Date.now()
+  for (let i = 0; i < gCache.length; i++) {
+    const item = gCache[i]
+    if (item.vid == vid && item.requestViewer == viewer && item.serviceBase == base && item.expiredTime - PLV_TOKEN_SKEW_MS > now && item.token.length > 0) {
+      return item
+    }
+  }
+  return null
+}
+
+function remember(item : PlvBizPlayToken) : void {
+  const next : PlvBizPlayToken[] = []
+  const now = Date.now()
+  for (let i = 0; i < gCache.length; i++) {
+    const saved = gCache[i]
+    const sameKey = saved.vid == item.vid && saved.requestViewer == item.requestViewer &&
+      saved.serviceBase == item.serviceBase
+    if (!sameKey && saved.expiredTime - PLV_TOKEN_SKEW_MS > now) next.push(saved)
+  }
+  if (item.expiredTime - PLV_TOKEN_SKEW_MS > now) next.push(item)
+  gCache = next
+}
+
+function readToken(obj : UTSJSONObject | null, fallbackVid : string, fallbackViewer : string, base : string) : PlvBizPlayToken | null {
+  if (obj == null) {
+    return null
+  }
+  const token = obj['token'] != null ? ('' + obj['token']).trim() : ''
+  if (token.length == 0) {
+    return null
+  }
+  const vid = obj['vid'] != null && ('' + obj['vid']).length > 0 ? '' + obj['vid'] : fallbackVid
+  const viewerId = obj['viewerId'] != null && ('' + obj['viewerId']).length > 0 ? '' + obj['viewerId'] : fallbackViewer
+  let expiredTime = 0
+  if (obj['expiredTime'] != null) {
+    expiredTime = parseInt('' + obj['expiredTime'])
+  }
+  if (vid.length == 0 || (fallbackVid.length > 0 && vid != fallbackVid)) {
+    return null
+  }
+  return {
+    vid: vid,
+    token: token,
+    viewerId: viewerId,
+    requestViewer: fallbackViewer,
+    serviceBase: base,
+    expiredTime: expiredTime
+  } as PlvBizPlayToken
+}
+
+function asObject(data : any | null) : UTSJSONObject | null {
+  if (data == null) {
+    return null
+  }
+  if (typeof data == 'string') {
+    return JSON.parse(data as string) as UTSJSONObject
+  }
+  return data as UTSJSONObject
+}
+
+function storedText(key : string) : string {
+  const value = uni.getStorageSync(key)
+  if (value == null) {
+    return ''
+  }
+  return '' + value
+}
+
+function trimSlash(value : string) : string {
+  let text = value.trim()
+  while (text.endsWith('/')) {
+    text = text.substring(0, text.length - 1)
+  }
+  return text
+}

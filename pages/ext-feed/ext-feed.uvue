@@ -1,0 +1,1195 @@
+<template>
+  <view class="page">
+    <view class="feed-stage" :style="stageStyle" @touchstart="onItemTouchStart" @touchmove.stop.prevent="onItemTouchMove" @touchend="onItemTouchEnd" @touchcancel="onItemTouchEnd">
+      <view class="feed-track" :style="trackStyle">
+        <view v-for="slot in feedSlots" :key="slot.index" class="feed-item" :style="cellStyle">
+          <view class="video-area">
+            <!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
+            <plv-player
+              v-if="slot.index == k && mountId.length > 0"
+              :key="mountId"
+              :session-id="mountId"
+              :pause-on-detach="false"
+              class="player"
+              :style="'position:absolute;top:0;left:0;width:100%;height:100%;'"
+              @view-init="onFeedView"
+              @first-frame="onFeedEvent"
+              @play-status="onFeedEvent"
+              @play-error="onFeedEvent"
+              @position-change="onFeedEvent"
+              @session-error="onFeedBindError"
+            />
+            <!-- #endif -->
+            <!-- 封面节点跟随视频保留；首帧显示之前不露出播放器的黑底。 -->
+            <image v-if="slot.index >= 0 && slot.index < dataList.length"
+              v-show="slot.index !== k || frameReadyIndex !== k"
+              class="feed-cover" :src="slot.item.cover" mode="aspectFit" />
+            <view v-if="slot.index === k && userPaused && !loading" class="big-play-wrap">
+              <text class="big-play">▶</text>
+            </view>
+          </view>
+          <view class="gesture-layer" />
+          <view v-if="slot.index >= 0 && slot.index < dataList.length" class="feed-overlay">
+            <view class="bottom-scrm" :style="scrmStyle" />
+            <view class="side-bar" :style="sideStyle" @touchstart.stop @touchmove.stop @touchend.stop>
+              <view class="side-item" @click="onLike(slot.index)">
+                <text class="side-icon" :class="slot.item.liked ? 'side-icon-on' : ''">♥</text>
+                <text class="side-count">{{ slot.item.likeCount }}</text>
+              </view>
+              <view class="side-item" @click="onCollect(slot.index)">
+                <text class="side-icon" :class="slot.item.collected ? 'side-icon-star' : ''">{{ slot.item.collected ? '★' : '☆' }}</text>
+                <text class="side-count">{{ slot.item.collectCount }}</text>
+              </view>
+              <view class="side-item" @click="toastDemo('评论')">
+                <text class="side-icon">💬</text>
+                <text class="side-count">{{ slot.item.commentCount }}</text>
+              </view>
+              <view class="side-item" @click="toastDemo('分享')">
+                <text class="side-icon">↗</text>
+                <text class="side-count">分享</text>
+              </view>
+              <view class="disc-wrap">
+                <view class="disc">
+                  <image class="disc-cover" :src="slot.item.cover" mode="aspectFill" />
+                </view>
+                <text class="disc-note">♪</text>
+              </view>
+            </view>
+            <view class="info-bar" :style="infoStyle">
+              <view class="info-content">
+                <view class="info-top" @touchstart.stop @touchend.stop @click="gotoPlayer(slot.index)">
+                  <image class="poster" :src="slot.item.cover" mode="aspectFill" />
+                  <view class="info-right">
+                    <view class="title-row">
+                      <text class="title-text">{{ slot.item.title }}</text>
+                      <text class="title-arrow">›</text>
+                    </view>
+                    <view class="tag-row">
+                      <view class="tag-chip" v-for="(tag, tIndex) in slot.item.tags" :key="tIndex">
+                        <text class="tag-text">{{ tag }}</text>
+                      </view>
+                    </view>
+                  </view>
+                </view>
+                <view class="desc-row">
+                  <text class="desc-text" :class="expandedIndex === slot.index ? 'desc-text-full' : ''">{{ slot.item.desc }}</text>
+                  <text class="expand-btn" @touchstart.stop @touchend.stop @click="toggleExpand(slot.index)">{{ expandedIndex === slot.index ? '收起' : '展开' }}</text>
+                </view>
+                <view class="disclaimer-row">
+                  <text class="disclaimer-icon">ⓘ</text>
+                  <text class="disclaimer-text">{{ playHint.length > 0 ? playHint : '播放凭证来自模拟客户业务后台' }}</text>
+                </view>
+              </view>
+              <view class="progress-track">
+                <view class="progress-line" />
+                <view class="progress-inner" :style="'width:' + (slot.index === k ? progressPercent * 100 : 0) + '%'">
+                  <view class="progress-thumb" />
+                </view>
+              </view>
+            </view>
+            <view class="cta-bar" :style="ctaStyle" @touchstart.stop @touchend.stop @click="gotoPlayer(slot.index)">
+              <text class="cta-icon">≡</text>
+              <text class="cta-text">第{{ slot.index + 1 }}集 · 点击继续观看</text>
+              <text class="cta-arrow">›</text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </view>
+    <view class="top-bar" :style="'padding-top:' + statusBarHeight + 'px'" @touchstart.stop @touchmove.stop @touchend.stop>
+      <view class="top-btn" @click="goBack">
+        <text class="top-icon">‹</text>
+      </view>
+      <view class="top-btn" @click="toastDemo('小窗播放')">
+        <view class="pip-box">
+          <view class="pip-outline" />
+          <view class="pip-inner" />
+        </view>
+      </view>
+    </view>
+  </view>
+</template>
+
+<script lang="uts">
+  import { plvTestLog } from '@/uni_modules/plv-media-player'
+  // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+  import {
+    plvPlayerCreateSession, plvPlayerDestroySession, plvPlayerSubscribe, plvPlayerUnsubscribe, plvPlayerPrepareMedia,
+    plvPlayerPromotePrepared, plvPlayerSetMedia, plvPlayerStart, plvPlayerPause, plvPlayerSeekTo,
+    PlvCreateSessionSuccess, PlvSubscribeSuccess, PlvSessionSuccess, PlvPlayerEvent,
+    PlvMediaPlayerFail, PlvSessionSettingsPatch, PlvMediaSource, PlvViewerPatch, PlvSeekSuccess
+  } from '@/uni_modules/plv-media-player'
+  // #endif
+  import { plvBizBaseUrl, plvEnsurePlayToken, plvViewerIdOrDefault, plvWarmPlayTokens } from '@/common/plv-biz-token.uts'
+
+  type PlvFeedItem = {
+    vid : string,
+    cover : string,
+    title : string,
+    tags : string[],
+    desc : string,
+    likeCount : number,
+    collectCount : number,
+    commentCount : number,
+    liked : boolean,
+    collected : boolean
+  }
+
+  type PlvFeedSlot = {
+    index : number,
+    item : PlvFeedItem
+  }
+
+  const TAP_SLOP = 10
+  const SLIDE_MS = 240
+
+  // ---- 模块级非响应式状态 ----
+  let gTouchStartX = 0
+  let gTouchStartY = 0
+  let gTouchStartTime = 0
+  let gAxis = 0               // 0 未判定 / 1 纵向翻页 / 2 横向忽略
+  let gAnimToken = 0
+
+  const feedTemplates : PlvFeedItem[] = [
+    { vid: 'e97dbe3e646f8f565c015f361025c51c_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e646f8f565c015f361025c51c_0.jpg!l1280Q85', title: '20230604 十周年祝福 富德人寿【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 8, collectCount: 4, commentCount: 0, liked: false, collected: false },
+    { vid: 'e97dbe3e6492596e7e680c4c7b99ca1b_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/b/e97dbe3e6492596e7e680c4c7b99ca1b_0.jpg!l1280Q85', title: '20230602 十周年祝福 华医网【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 45, collectCount: 17, commentCount: 1, liked: false, collected: false },
+    { vid: 'e97dbe3e641a81a1e87750a2522b22c9_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/9/e97dbe3e641a81a1e87750a2522b22c9_0.jpg!l1280Q85', title: '20230602 十周年祝福 华医网【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 82, collectCount: 30, commentCount: 2, liked: false, collected: false },
+    { vid: 'e97dbe3e64b6dd24f868c16335570343_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/3/e97dbe3e64b6dd24f868c16335570343_0.jpg!l1280Q85', title: '20230529 保利威会议纪要与总结【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 119, collectCount: 43, commentCount: 3, liked: false, collected: false },
+    { vid: 'e97dbe3e64b2ab3301c3289a5731cbb0_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/0/e97dbe3e64b2ab3301c3289a5731cbb0_0.jpg!l1280Q85', title: '20230529 保利威会议纪要与总结【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 156, collectCount: 56, commentCount: 4, liked: false, collected: false },
+    { vid: 'e97dbe3e64f6f6d1f75aa6d16a2d128e_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/e/e97dbe3e64f6f6d1f75aa6d16a2d128e_0.jpg!l1280Q85', title: '20230526 十周年祝福视频 华为【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 193, collectCount: 69, commentCount: 5, liked: false, collected: false },
+    { vid: 'e97dbe3e64c7f12a6992bbd9e3162ce0_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/0/e97dbe3e64c7f12a6992bbd9e3162ce0_0.jpg!l1280Q85', title: '20230526 十周年祝福视频 华为【横屏】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 230, collectCount: 82, commentCount: 6, liked: false, collected: false },
+    { vid: 'e97dbe3e649c4f6743ca640bda94230c_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e649c4f6743ca640bda94230c_0.jpg!l1280Q85', title: '20230521 智能答疑数字人【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 267, collectCount: 95, commentCount: 7, liked: false, collected: false },
+    { vid: 'e97dbe3e64cbeecefa4f71f73b43cc8c_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e64cbeecefa4f71f73b43cc8c_0.jpg!l1280Q85', title: '20230515 AI产品宣传之智能大纲 AI助手【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 304, collectCount: 108, commentCount: 8, liked: false, collected: false },
+    { vid: 'e97dbe3e64ae88c87769c9dba0aad552_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/2/e97dbe3e64ae88c87769c9dba0aad552_0.jpg!l1280Q85', title: '20230515 AI产品视频之智能大纲 AI助手【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 341, collectCount: 121, commentCount: 9, liked: false, collected: false },
+    { vid: 'e97dbe3e640cd100431e12a8f8313c7d_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/d/e97dbe3e640cd100431e12a8f8313c7d_0.jpg!l1280Q85', title: '20230324 春季发布会暨首秀精彩看点【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 378, collectCount: 134, commentCount: 10, liked: false, collected: false },
+    { vid: 'e97dbe3e6423671524f4601cb652bd0d_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/d/e97dbe3e6423671524f4601cb652bd0d_0.jpg!l1280Q85', title: '20230324 春季发布会暨首秀精彩看点【横版水印】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 415, collectCount: 147, commentCount: 11, liked: false, collected: false },
+    { vid: 'e97dbe3e645083078cb42da5aac89b7f_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/f/e97dbe3e645083078cb42da5aac89b7f_0.jpg!l1280Q85', title: '20221208 2023营销动员大会 线上最佳方案【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 452, collectCount: 160, commentCount: 12, liked: false, collected: false },
+    { vid: 'e97dbe3e64414e6dad17196f652c021f_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/f/e97dbe3e64414e6dad17196f652c021f_0.jpg!l1280Q85', title: '20221208 2023营销动员大会 线上最佳方案【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 489, collectCount: 173, commentCount: 13, liked: false, collected: false },
+    { vid: 'e97dbe3e640e610ca1e92c6969f3721d_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/d/e97dbe3e640e610ca1e92c6969f3721d_0.jpg!l1280Q85', title: '20221122 MR虚拟直播【视频号 对外版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 526, collectCount: 186, commentCount: 14, liked: false, collected: false },
+    { vid: 'e97dbe3e64e0c487086d9cf11b5d08d9_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/9/e97dbe3e64e0c487086d9cf11b5d08d9_0.jpg!l1280Q85', title: '20221122 MR虚拟直播 2.0【横版 对外版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 563, collectCount: 199, commentCount: 15, liked: false, collected: false },
+    { vid: 'e97dbe3e64fba07447f7c37b283fd76d_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/d/e97dbe3e64fba07447f7c37b283fd76d_0.jpg!l1280Q85', title: '20221108 云席大会短视频【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 600, collectCount: 212, commentCount: 16, liked: false, collected: false },
+    { vid: 'e97dbe3e643ea0a62166780aeab7c43c_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e643ea0a62166780aeab7c43c_0.jpg!l1280Q85', title: '20221108 云席大会短视频【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 637, collectCount: 225, commentCount: 17, liked: false, collected: false },
+    { vid: 'e97dbe3e64463c541cd1accd205de0a5_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/5/e97dbe3e64463c541cd1accd205de0a5_0.jpg!l1280Q85', title: '20221025 保利威年会视频 水印', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 674, collectCount: 238, commentCount: 18, liked: false, collected: false },
+    { vid: 'e97dbe3e64436506a71c7cbeecf001de_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/e/e97dbe3e64436506a71c7cbeecf001de_0.jpg!l1280Q85', title: '20221025 2023云年会最全攻略 【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 711, collectCount: 251, commentCount: 19, liked: false, collected: false },
+    { vid: 'e97dbe3e64b564d0daac43002effcb48_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/8/e97dbe3e64b564d0daac43002effcb48_0.jpg!l1280Q85', title: '20220615 66直播玩法回顾【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 748, collectCount: 264, commentCount: 20, liked: false, collected: false },
+    { vid: 'e97dbe3e64e4f1bd6c28c395703fc4d8_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/8/e97dbe3e64e4f1bd6c28c395703fc4d8_0.jpg!l1280Q85', title: '20220615 66直播玩法回顾【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 785, collectCount: 277, commentCount: 21, liked: false, collected: false },
+    { vid: 'e97dbe3e6400b7c243ecacf0a45e3fbb_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/b/e97dbe3e6400b7c243ecacf0a45e3fbb_0.jpg!l1280Q85', title: '20220614 保利威研讨会2.0【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 822, collectCount: 290, commentCount: 22, liked: false, collected: false },
+    { vid: 'e97dbe3e648ca60cad8017983a07ecc9_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/9/e97dbe3e648ca60cad8017983a07ecc9_0.jpg!l1280Q85', title: '20220614 保利威研讨会2.0【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 859, collectCount: 303, commentCount: 23, liked: false, collected: false },
+    { vid: 'e97dbe3e646a24f4c61a45dcbf9354ce_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/e/e97dbe3e646a24f4c61a45dcbf9354ce_0.jpg!l1280Q85', title: '20220331 SaaS发布会直播精剪【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 896, collectCount: 16, commentCount: 24, liked: false, collected: false },
+    { vid: 'e97dbe3e642eb6b15f9983949ffbdea7_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/7/e97dbe3e642eb6b15f9983949ffbdea7_0.jpg!l1280Q85', title: '20220331 发布会直播精剪【横版】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 33, collectCount: 29, commentCount: 25, liked: false, collected: false },
+    { vid: 'e97dbe3e645709678f30e6e5b11ad5cc_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e645709678f30e6e5b11ad5cc_0.jpg!l1280Q85', title: '20220320 保利威品牌宣传片（16：9）', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 70, collectCount: 42, commentCount: 26, liked: false, collected: false },
+    { vid: 'e97dbe3e642d730fbee41f4a8a4e499d_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/d/e97dbe3e642d730fbee41f4a8a4e499d_0.jpg!l1280Q85', title: '20220319 保利威品牌宣传片【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 107, collectCount: 55, commentCount: 27, liked: false, collected: false },
+    { vid: 'e97dbe3e641b079d268330cc274fe3b4_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/4/e97dbe3e641b079d268330cc274fe3b4_0.jpg!l1280Q85', title: '20211214 MR直播精彩回放【视频号】(1)', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 144, collectCount: 68, commentCount: 28, liked: false, collected: false },
+    { vid: 'e97dbe3e643cd26d48aa46f5de150783_e', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/3/e97dbe3e643cd26d48aa46f5de150783_0.jpg!l1280Q85', title: '20210309 企业直播互动5大玩法【视频号】', tags: ['企业', '精选'], desc: '保利威视频号内容精选，涵盖直播、发布会与产品演示等场景。', likeCount: 181, collectCount: 81, commentCount: 29, liked: false, collected: false }
+  ]
+
+  export default {
+    data() {
+      return {
+        dataList: feedTemplates as PlvFeedItem[],
+        k: 0,                      // 当前 cell 下标（feed 核心 state）
+        dragY: 0,                  // 跟手位移（px，上滑为负）
+        animating: false,          // 松手后吸附动画中（此期间 transition 生效）
+        settling: false,           // 吸附未结束，忽略新手势
+        frameReadyIndex: -1,      // 收到当前视频首帧前始终保留封面
+        // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+        feedSettings: {autoPlay: false} as PlvSessionSettingsPatch,
+        feedEpoch: 0,
+        currentId: '',
+        currentIndex: -1,
+        currentGeneration: -1,
+        currentFrame: false,
+        promotedAwaitingFrame: false,
+        candidateId: '',
+        candidateIndex: -1,
+        candidateGeneration: -1,
+        candidatePrepared: -1,
+        candidateFrame: -1,
+        candidateListener: '',
+        mountId: '',
+        hostReady: false,
+        promoting: false,
+        mediaPending: false,
+        creatingFeedSession: false,
+        // #endif
+        cellHeight: 700,
+        statusBarHeight: 20,
+        bottomInset: 0,            // 底部系统导航栏 inset（三键导航/手势条），全屏布局用
+        refreshing: false,
+        loading: false,
+        userPaused: false,
+        pageVisible: true,
+        expandedIndex: -1,
+        progressPercent: 0.0,
+        playHint: '',
+      }
+    },
+    computed: {
+      feedSlots() : PlvFeedSlot[] {
+        const slots : PlvFeedSlot[] = []
+        for (let index = this.k - 1; index <= this.k + 1; index++) {
+          const itemIndex = Math.max(0, Math.min(this.dataList.length - 1, index))
+          slots.push({ index: index, item: this.dataList[itemIndex] } as PlvFeedSlot)
+        }
+        return slots
+      },
+      // 视口只露一页；轨道恒定三槽（上一条 / 当前 / 下一条），当前槽居中
+      stageStyle() : string {
+        return 'height:' + this.cellHeight + 'px;'
+      },
+      cellStyle() : string {
+        return 'height:' + this.cellHeight + 'px;'
+      },
+      // 贴底 UI 随 bottomInset 抬升，避免被系统导航栏（三键/手势条）遮挡
+      scrmStyle() : string {
+        return 'bottom:' + this.bottomInset + 'px;'
+      },
+      ctaStyle() : string {
+        return 'bottom:' + this.bottomInset + 'px;'
+      },
+      infoStyle() : string {
+        return 'bottom:' + (74 + this.bottomInset) + 'px;'
+      },
+      sideStyle() : string {
+        return 'bottom:' + (160 + this.bottomInset) + 'px;'
+      },
+      trackStyle() : string {
+        const y = -this.cellHeight + this.dragY
+        const dur = this.animating ? SLIDE_MS : 0
+        return 'transform:translateY(' + y + 'px);transition-property:transform;transition-duration:' + dur + 'ms;transition-timing-function:ease-out;'
+      }
+    },
+    watch: {
+      // feed 核心：k 变化 → 旧项停播、新项起播、守护重置
+      k(newK : number, oldK : number) {
+        if (newK === oldK) return
+        // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+        this.selectFeedIndex(newK)
+        // #endif
+      }
+    },
+    onLoad() {
+      plvTestLog('[FEED] onLoad enter')
+      this.updateLayout()
+      const bizBase = plvBizBaseUrl()
+      plvTestLog('[FEED] bizBase=' + bizBase)
+      if (bizBase.length > 0) {
+        const vids : string[] = []
+        for (let i = 0; i < this.dataList.length; i++) {
+          vids.push(this.dataList[i].vid)
+        }
+        const self = this
+        plvWarmPlayTokens(vids, this.viewerForBiz(), function (count : number, err : string) {
+          plvTestLog('[FEED] warm tokens=' + count + ' err=' + err)
+          if (err.length > 0) {
+            self.playHint = err
+          }
+        })
+      } else if (this.storedToken().length === 0) {
+        this.playHint = '请配置业务服务地址，或手动保存播放 token'
+        uni.showToast({ title: this.playHint, icon: 'none' })
+      }
+    },
+    onReady() {
+      // navigateTo 时 onLoad 可能仍拿到上一页（带导航栏）的窗口尺寸。
+      this.updateLayout()
+    },
+    onResize() {
+      this.updateLayout()
+    },
+    onHide() {
+      this.pageVisible = false
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      this.feedEpoch++
+      this.mediaPending = false
+      this.releaseFeedCandidate()
+      if (this.currentId.length > 0 && this.currentGeneration > 0) {
+        plvPlayerPause({sessionId: this.currentId, expectedMediaGeneration: this.currentGeneration})
+      }
+      // #endif
+    },
+    onShow() {
+      this.pageVisible = true
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      this.ensureFeedCurrent()
+      // #endif
+    },
+    onUnload() {
+      this.pageVisible = false
+      gAnimToken = 0
+      gTouchStartTime = 0
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      this.feedEpoch++
+      this.releaseFeedCandidate()
+      this.releaseFeedCurrent()
+      // #endif
+    },
+    methods: {
+      storedText(key : string) : string {
+        const value = uni.getStorageSync(key)
+        if (value == null) {
+          return ''
+        }
+        return '' + value
+      },
+      storedToken() : string {
+        return this.storedText('plv_play_token')
+      },
+      storedViewerId() : string {
+        return this.storedText('plv_play_viewer_id')
+      },
+      viewerForBiz() : string {
+        return plvViewerIdOrDefault(this.storedViewerId())
+      },
+      updateLayout() {
+        const win = uni.getWindowInfo()
+        this.statusBarHeight = win.statusBarHeight > 0 ? win.statusBarHeight : 20
+        // 全屏布局：窗口本身全屏（含底部导航栏区域），但 windowHeight 只报可用区高，
+        // 且本机 runtime 的 safeAreaInsets.bottom 恒为 0（2026-11-05 真机实测：白条 ~100px）。
+        // 故用 screenHeight（整屏高）作 cell 高度铺满屏底；贴底 UI 以 (screenHeight - windowHeight) 内缩避让导航键。
+        const fullH = win.screenHeight > 0 ? win.screenHeight : (win.windowHeight > 0 ? win.windowHeight : 700)
+        const usableH = win.windowHeight > 0 ? win.windowHeight : fullH
+        this.cellHeight = fullH
+        // iOS 沉浸式窗口包含 Home 指示条，需同时保留系统返回的安全区。
+        this.bottomInset = Math.max(win.safeAreaInsets.bottom, Math.max(0, fullH - usableH))
+        plvTestLog('[FEED] layout height=' + this.cellHeight + ' bottom=' + this.bottomInset)
+      },
+
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      ownsFeedTarget(epoch: number, index: number): boolean {
+        return this.pageVisible && this.feedEpoch == epoch && this.k == index
+      },
+      releaseFeedCandidate() {
+        const id = this.candidateId
+        this.candidateId = ''
+        this.candidateIndex = -1
+        this.candidateGeneration = -1
+        this.candidatePrepared = -1
+        this.candidateFrame = -1
+        this.promoting = false
+        if (this.candidateListener.length > 0) {
+          plvPlayerUnsubscribe({listenerId: this.candidateListener})
+          this.candidateListener = ''
+        }
+        if (id.length > 0) {
+          if (this.mountId == id) {
+            this.mountId = ''
+            this.hostReady = false
+          }
+          plvPlayerDestroySession({sessionId: id})
+        }
+      },
+      releaseFeedCurrent() {
+        const id = this.currentId
+        this.currentId = ''
+        this.currentIndex = -1
+        this.currentGeneration = -1
+        this.currentFrame = false
+        this.promotedAwaitingFrame = false
+        if (id.length == 0) return
+        if (this.mountId == id) {
+          this.mountId = ''
+          this.hostReady = false
+        }
+        plvPlayerDestroySession({sessionId: id})
+      },
+      selectFeedIndex(index: number) {
+        this.feedEpoch++
+        this.mediaPending = false
+        this.loading = true
+        this.userPaused = false
+        this.frameReadyIndex = -1
+        this.progressPercent = 0
+        this.playHint = ''
+        if (!this.pageVisible) return
+        if (!this.promoting && this.currentId.length > 0 && this.candidateIndex == index &&
+            this.candidateGeneration > 0 && this.candidateGeneration == this.candidatePrepared) {
+          this.promoteFeedCandidate(index)
+          return
+        }
+        this.releaseFeedCandidate()
+        this.releaseFeedCurrent()
+        this.ensureFeedCurrent()
+      },
+      ensureFeedCurrent() {
+        if (!this.pageVisible || this.creatingFeedSession || this.promoting) return
+        const index = this.k
+        if (this.currentId.length > 0 && this.currentIndex != index) this.releaseFeedCurrent()
+        if (this.currentId.length > 0) {
+          if (!this.hostReady || this.userPaused) return
+          if (this.currentGeneration < 0) this.loadFeedCurrent()
+          else this.startFeedCurrent()
+          return
+        }
+        const epoch = this.feedEpoch
+        this.creatingFeedSession = true
+        plvPlayerCreateSession({
+          settings: this.feedSettings,
+          success: (result: PlvCreateSessionSuccess) => {
+            this.creatingFeedSession = false
+            if (!this.ownsFeedTarget(epoch, index)) {
+              plvPlayerDestroySession({sessionId: result.sessionId})
+              this.ensureFeedCurrent()
+              return
+            }
+            this.currentId = result.sessionId
+            this.currentIndex = index
+            this.hostReady = false
+            this.mountId = result.sessionId
+          },
+          fail: (error: PlvMediaPlayerFail) => {
+            this.creatingFeedSession = false
+            if (this.ownsFeedTarget(epoch, index)) this.showFeedFailure(error.errMsg)
+            else this.ensureFeedCurrent()
+          }
+        })
+      },
+      loadFeedCurrent() {
+        if (this.mediaPending || this.userPaused || !this.hostReady || !this.pageVisible) return
+        const index = this.k
+        const id = this.currentId
+        const epoch = this.feedEpoch
+        this.mediaPending = true
+        this.loading = true
+        this.requestFeedMedia(index, epoch, (source: PlvMediaSource | null, error: string) => {
+          if (source == null) {
+            this.mediaPending = false
+            this.showFeedFailure(error)
+            return
+          }
+          this.currentFrame = false
+          plvPlayerSetMedia({
+            sessionId: id, source: source,
+            success: (result: PlvSessionSuccess) => {
+              if (!this.ownsFeedTarget(epoch, index) || this.currentId != id) return
+              this.mediaPending = false
+              this.currentGeneration = result.mediaGeneration
+              this.startFeedCurrent()
+            },
+            fail: (failure: PlvMediaPlayerFail) => {
+              if (!this.ownsFeedTarget(epoch, index)) return
+              this.mediaPending = false
+              this.showFeedFailure(failure.errMsg)
+            }
+          })
+        })
+      },
+      requestFeedMedia(index: number, epoch: number, done: (source: PlvMediaSource | null, error: string) => void) {
+        const currentIndex = this.k
+        const vid = this.dataList[index].vid
+        const viewerId = this.viewerForBiz()
+        const base = plvBizBaseUrl()
+        plvEnsurePlayToken(vid, viewerId, (token: string, error: string, _encoded: string) => {
+          if (!this.ownsFeedTarget(epoch, currentIndex)) return
+          if (this.dataList[index].vid != vid || this.viewerForBiz() != viewerId || plvBizBaseUrl() != base) {
+            done(null, '播放凭证配置已更改')
+            return
+          }
+          if (token.length == 0) {
+            done(null, error.length > 0 ? error : '该视频没有播放 token')
+            return
+          }
+          const viewer: PlvViewerPatch = {viewerId: viewerId}
+          const source: PlvMediaSource = {kind: 'vid', vid: vid, token: token, viewer: viewer}
+          done(source, '')
+        })
+      },
+      startFeedCurrent() {
+        if (!this.pageVisible || this.userPaused || this.currentGeneration < 0 || !this.hostReady) return
+        const id = this.currentId
+        const index = this.k
+        const epoch = this.feedEpoch
+        plvPlayerStart({
+          sessionId: id, expectedMediaGeneration: this.currentGeneration,
+          success: (_result: PlvSessionSuccess) => {
+            if (this.ownsFeedTarget(epoch, index) && this.currentId == id) this.prepareFeedNext()
+          },
+          fail: (error: PlvMediaPlayerFail) => {
+            if (this.ownsFeedTarget(epoch, index) && this.currentId == id) this.showFeedFailure(error.errMsg)
+          }
+        })
+      },
+      prepareFeedNext() {
+        const index = this.k
+        const next = index + 1
+        if (next >= this.dataList.length || this.candidateIndex >= 0 || this.creatingFeedSession) return
+        const epoch = this.feedEpoch
+        this.candidateIndex = next
+        this.requestFeedMedia(next, epoch, (source: PlvMediaSource | null, _error: string) => {
+          if (source == null) {
+            this.releaseFeedCandidate()
+            return
+          }
+          this.creatingFeedSession = true
+          plvPlayerCreateSession({
+            settings: this.feedSettings,
+            success: (result: PlvCreateSessionSuccess) => {
+              this.creatingFeedSession = false
+              if (!this.ownsFeedTarget(epoch, index) || this.candidateIndex != next) {
+                plvPlayerDestroySession({sessionId: result.sessionId})
+                this.ensureFeedCurrent()
+                return
+              }
+              this.candidateId = result.sessionId
+              this.observeFeedCandidate(result.sessionId, source)
+            },
+            fail: (_failure: PlvMediaPlayerFail) => {
+              this.creatingFeedSession = false
+              if (this.ownsFeedTarget(epoch, index)) this.releaseFeedCandidate()
+              else this.ensureFeedCurrent()
+            }
+          })
+        })
+      },
+      observeFeedCandidate(id: string, source: PlvMediaSource) {
+        plvPlayerSubscribe({
+          sessionId: id, events: ['play-status', 'play-error', 'first-frame'],
+          onEvent: (event: PlvPlayerEvent) => {
+            if (event.sessionId != this.candidateId) return
+            if (event.type == 'first-frame') this.candidateFrame = event.mediaGeneration
+            if (event.type == 'play-status' && event.detail.status == 'prepared') {
+              this.candidatePrepared = event.mediaGeneration
+              plvTestLog('[FEED] typed prepared index=' + this.candidateIndex)
+            }
+            if (event.type == 'play-error' && !this.promoting) this.releaseFeedCandidate()
+          },
+          success: (receipt: PlvSubscribeSuccess) => {
+            if (id != this.candidateId) {
+              plvPlayerUnsubscribe({listenerId: receipt.listenerId})
+              return
+            }
+            this.candidateListener = receipt.listenerId
+            plvPlayerPrepareMedia({
+              sessionId: id, source: source, expectedMediaGeneration: receipt.mediaGeneration,
+              success: (result: PlvSessionSuccess) => {
+                if (id == this.candidateId) this.candidateGeneration = result.mediaGeneration
+              },
+              fail: (_failure: PlvMediaPlayerFail) => {
+                if (id == this.candidateId) this.releaseFeedCandidate()
+              }
+            })
+          },
+          fail: (_failure: PlvMediaPlayerFail) => {
+            if (id == this.candidateId) this.releaseFeedCandidate()
+          }
+        })
+      },
+      promoteFeedCandidate(index: number) {
+        const id = this.candidateId
+        const previous = this.currentId
+        const epoch = this.feedEpoch
+        this.promoting = true
+        this.hostReady = false
+        plvPlayerPromotePrepared({
+          sessionId: id, previousSessionId: previous, mediaGeneration: this.candidateGeneration,
+          success: (result: PlvSessionSuccess) => {
+            if (!this.ownsFeedTarget(epoch, index) || id != this.candidateId) return
+            this.releaseFeedCurrent()
+            this.currentId = id
+            this.currentIndex = index
+            this.currentGeneration = result.mediaGeneration
+            this.currentFrame = this.candidateFrame == result.mediaGeneration
+            this.promotedAwaitingFrame = true
+            // Transfer the page's candidate ownership to current before clearing the old role.
+            this.candidateId = ''
+            this.releaseFeedCandidate()
+            plvTestLog('[FEED] typed promoted index=' + index)
+            this.prepareFeedNext()
+          },
+          fail: (_failure: PlvMediaPlayerFail) => {
+            if (!this.ownsFeedTarget(epoch, index) || id != this.candidateId) return
+            this.fallbackFeedPromotion()
+          }
+        })
+        this.mountId = id
+      },
+      fallbackFeedPromotion() {
+        this.feedEpoch++
+        this.releaseFeedCandidate()
+        this.releaseFeedCurrent()
+        this.frameReadyIndex = -1
+        plvTestLog('[FEED] typed fallback index=' + this.k)
+        this.ensureFeedCurrent()
+      },
+      onFeedView(event: PlvPlayerEvent) {
+        if (event.sessionId != this.mountId) return
+        this.hostReady = true
+        if (!this.promoting && this.currentGeneration < 0) this.loadFeedCurrent()
+      },
+      onFeedBindError(error: PlvMediaPlayerFail) {
+        if (!this.pageVisible) return
+        if (this.promoting) {
+          this.fallbackFeedPromotion()
+          return
+        }
+        this.releaseFeedCurrent()
+        this.showFeedFailure(error.errMsg)
+      },
+      onFeedEvent(event: PlvPlayerEvent) {
+        if (!this.pageVisible || event.sessionId != this.mountId) return
+        const index = this.k
+        if (this.promoting) {
+          if (event.type == 'play-error') this.fallbackFeedPromotion()
+          return
+        }
+        if (event.sessionId != this.currentId || event.mediaGeneration != this.currentGeneration) return
+        if (event.type == 'first-frame') {
+          this.currentFrame = true
+        } else if (event.type == 'play-error') {
+          if (this.promotedAwaitingFrame) this.fallbackFeedPromotion()
+          else this.showFeedFailure(event.detail.error?.errMsg ?? '播放失败')
+        } else if (event.type == 'position-change') {
+          const position = event.detail.currentPosition ?? 0
+          const duration = event.detail.duration ?? 0
+          if (duration > 0) this.progressPercent = Math.min(1, position / duration)
+          if (position > 0) plvTestLog('[FEED] position index=' + index + ' pos=' + position)
+          if (this.hostReady && this.currentFrame && position > 0 && this.frameReadyIndex != index) {
+            this.frameReadyIndex = index
+            this.promotedAwaitingFrame = false
+            this.loading = false
+            plvTestLog('[FEED] cover-hidden first-frame index=' + index)
+          }
+        } else if (event.type == 'play-status' && event.detail.status == 'completed' && !this.userPaused) {
+          const epoch = this.feedEpoch
+          const id = event.sessionId
+          plvPlayerSeekTo({
+            sessionId: id, expectedMediaGeneration: event.mediaGeneration, seconds: 0,
+            success: (_result: PlvSeekSuccess) => {
+              if (this.ownsFeedTarget(epoch, index) && this.currentId == id) this.startFeedCurrent()
+            },
+            fail: (failure: PlvMediaPlayerFail) => {
+              if (this.ownsFeedTarget(epoch, index)) this.showFeedFailure(failure.errMsg)
+            }
+          })
+        }
+      },
+      showFeedFailure(message: string) {
+        this.loading = false
+        this.playHint = message
+      },
+      // #endif
+
+
+      // ================= 跟手翻页：拖动时画面跟随，松手只吸附相邻一页 =================
+      onItemTouchStart(e : any) {
+        if (this.settling) return
+        const ev = e as UniTouchEvent
+        const t = ev.changedTouches[0]
+        gTouchStartX = t.clientX
+        gTouchStartY = t.clientY
+        gTouchStartTime = Date.now()
+        gAxis = 0
+        this.animating = false
+      },
+
+      onItemTouchMove(e : any) {
+        if (gTouchStartTime === 0 || this.settling) return
+        const ev = e as UniTouchEvent
+        const t = ev.changedTouches[0]
+        const dx = t.clientX - gTouchStartX
+        const dy = t.clientY - gTouchStartY
+        if (gAxis === 0) {
+          if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return
+          gAxis = Math.abs(dy) >= Math.abs(dx) ? 1 : 2
+        }
+        if (gAxis !== 1) return
+        this.dragY = this.clampDrag(dy)
+      },
+
+      onItemTouchEnd(e : any) {
+        if (gTouchStartTime === 0 || this.settling) return
+        const ev = e as UniTouchEvent
+        const t = ev.changedTouches[0]
+        const dx = t.clientX - gTouchStartX
+        const dy = t.clientY - gTouchStartY
+        const dt = Math.max(1, Date.now() - gTouchStartTime)
+        gTouchStartTime = 0
+        const adx = Math.abs(dx)
+        const ady = Math.abs(dy)
+        if (gAxis === 0) {
+          if (adx < TAP_SLOP && ady < TAP_SLOP && dt < 280) {
+            this.togglePlay(this.k)
+            return
+          }
+          if (ady > adx && ady >= 24) {
+            gAxis = 1
+          } else {
+            this.springBack()
+            return
+          }
+        }
+        if (gAxis !== 1) {
+          this.springBack()
+          return
+        }
+        const velocity = ady / dt
+        const flip = ady > this.cellHeight * 0.16 || (velocity > 0.5 && ady > 30)
+        if (!flip) {
+          this.springBack()
+          return
+        }
+        if (dy < 0) {
+          if (this.k >= this.dataList.length - 1) {
+            uni.showToast({ title: '没有更多了', icon: 'none' })
+            this.springBack()
+            return
+          }
+          this.settleTo(this.k + 1)
+        } else {
+          if (this.k <= 0) {
+            this.pullRefresh()
+            this.springBack()
+            return
+          }
+          this.settleTo(this.k - 1)
+        }
+      },
+
+      // 两端橡皮筋，中间最多跟手一页，避免一次滑过多条
+      clampDrag(dy : number) : number {
+        const h = this.cellHeight
+        if (dy > 0 && this.k <= 0) {
+          return Math.min(dy * 0.32, h * 0.4)
+        }
+        if (dy < 0 && this.k >= this.dataList.length - 1) {
+          return Math.max(dy * 0.32, -h * 0.4)
+        }
+        if (dy > h) return h
+        if (dy < -h) return -h
+        return dy
+      },
+
+      // 先打开 transition，下一帧再改目标位移，避免起止状态被合成到同一帧导致动画丢失
+      animateDragTo(target : number, page : number) {
+        this.settling = true
+        this.animating = true
+        const token = Date.now()
+        gAnimToken = token
+        const self = this
+        setTimeout(() => {
+          if (gAnimToken !== token) return
+          self.dragY = target
+          setTimeout(() => {
+            if (gAnimToken !== token) return
+            self.animating = false
+            if (page >= 0) {
+              self.dragY = 0
+              self.k = page
+            }
+            self.settling = false
+          }, SLIDE_MS + 40)
+        }, 16)
+      },
+
+      settleTo(page : number) {
+        if (page < 0 || page >= this.dataList.length || page === this.k) {
+          this.springBack()
+          return
+        }
+        const target = page > this.k ? -this.cellHeight : this.cellHeight
+        this.animateDragTo(target, page)
+      },
+
+      springBack() {
+        if (this.dragY === 0) return
+        this.animateDragTo(0, -1)
+      },
+
+      // 首页下拉：只给反馈，不翻页
+      pullRefresh() {
+        if (this.refreshing) return
+        this.refreshing = true
+        uni.showToast({ title: '已刷新', icon: 'none' })
+        setTimeout(() => {
+          this.refreshing = false
+        }, 800)
+      },
+
+      togglePlay(y : number) {
+        if (y != this.k) return
+        // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+        if (this.promoting) return
+        if (this.currentGeneration < 0) {
+          this.ensureFeedCurrent()
+          return
+        }
+        this.userPaused = !this.userPaused
+        if (this.userPaused) {
+          plvPlayerPause({sessionId: this.currentId, expectedMediaGeneration: this.currentGeneration})
+        } else {
+          this.startFeedCurrent()
+        }
+        // #endif
+      },
+
+      // ================= 互动 / 跳转 =================
+      goBack() {
+        uni.navigateBack()
+      },
+
+      onLike(y : number) {
+        const item = this.dataList[y]
+        item.liked = !item.liked
+        item.likeCount = item.likeCount + (item.liked ? 1 : -1)
+      },
+
+      onCollect(y : number) {
+        const item = this.dataList[y]
+        item.collected = !item.collected
+        item.collectCount = item.collectCount + (item.collected ? 1 : -1)
+      },
+
+      toggleExpand(y : number) {
+        this.expandedIndex = this.expandedIndex === y ? -1 : y
+      },
+
+      gotoPlayer(y : number) {
+        const item = this.dataList[y]
+        uni.navigateTo({ url: '/pages/player/player?vid=' + item.vid })
+      },
+
+      toastDemo(name : string) {
+        uni.showToast({ title: name + '：演示页面，仅作展示', icon: 'none' })
+      }
+    }
+  }
+</script>
+
+<style>
+  .page {
+    flex: 1;
+    overflow: hidden;
+    background-color: #000000;
+  }
+  .feed-stage {
+    overflow: hidden;
+    background-color: #000000;
+  }
+  .feed-track {
+    width: 100%;
+  }
+  .feed-item {
+    position: relative;
+    flex-shrink: 0;
+    overflow: hidden;
+    background-color: #000000;
+  }
+  .gesture-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.01);
+  }
+  .video-area {
+    position: relative;
+    flex: 1;
+    height: 100%;
+  }
+  .feed-cover {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: #000000;
+  }
+  .feed-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+  .player {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+  }
+  .tap-layer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.01);
+  }
+  .big-play-wrap {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    align-items: center;
+    justify-content: center;
+  }
+  .big-play {
+    font-size: 52px;
+    color: #ffffff;
+    opacity: 0.85;
+  }
+  .bottom-scrm {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 280px;
+    background-image: linear-gradient(to bottom, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.55));
+  }
+  .side-bar {
+    position: absolute;
+    right: 7px;
+    bottom: 160px;
+    align-items: center;
+  }
+  .side-item {
+    align-items: center;
+    margin-bottom: 18px;
+  }
+  .side-icon {
+    font-size: 31px;
+    color: #ffffff;
+    width: 34px;
+    height: 34px;
+    text-align: center;
+  }
+  .side-icon-on {
+    color: #ff3b5c;
+  }
+  .side-icon-star {
+    color: #ffcc00;
+  }
+  .side-count {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #ffffff;
+    font-weight: 500;
+  }
+  .disc-wrap {
+    margin-top: 6px;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+  }
+  .disc {
+    width: 44px;
+    height: 44px;
+    border-radius: 22px;
+    background-color: #1c1c1e;
+    border-width: 4px;
+    border-color: #2c2c2e;
+    align-items: center;
+    justify-content: center;
+  }
+  .disc-cover {
+    width: 26px;
+    height: 26px;
+    border-radius: 13px;
+  }
+  .disc-note {
+    position: absolute;
+    right: -3px;
+    bottom: -2px;
+    font-size: 17px;
+    color: #ffffff;
+  }
+  .info-bar {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 74px;
+  }
+  .info-content {
+    margin-right: 54px;
+  }
+  .info-top {
+    flex-direction: row;
+    align-items: center;
+  }
+  .poster {
+    width: 44px;
+    height: 59px;
+    border-radius: 6px;
+  }
+  .info-right {
+    flex: 1;
+    margin-left: 9px;
+  }
+  .title-row {
+    flex-direction: row;
+    align-items: center;
+  }
+  .title-text {
+    flex: 1;
+    font-size: 17px;
+    font-weight: bold;
+    color: #ffffff;
+    lines: 1;
+    text-overflow: ellipsis;
+  }
+  .title-arrow {
+    font-size: 18px;
+    color: #ffffff;
+    margin-left: 4px;
+    opacity: 0.9;
+  }
+  .tag-row {
+    flex-direction: row;
+    margin-top: 8px;
+  }
+  .tag-chip {
+    background-color: rgba(255, 255, 255, 0.16);
+    border-radius: 4px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    padding-left: 8px;
+    padding-right: 8px;
+    margin-right: 6px;
+  }
+  .tag-text {
+    font-size: 11px;
+    color: #e6e6e6;
+  }
+  .desc-row {
+    flex-direction: row;
+    align-items: flex-end;
+    margin-top: 11px;
+  }
+  .desc-text {
+    flex: 1;
+    font-size: 15px;
+    color: #ffffff;
+    line-height: 22px;
+    lines: 2;
+    text-overflow: ellipsis;
+  }
+  .desc-text-full {
+    lines: 32;
+  }
+  .expand-btn {
+    font-size: 14px;
+    color: #d9d9d9;
+    margin-left: 8px;
+  }
+  .disclaimer-row {
+    flex-direction: row;
+    align-items: center;
+    margin-top: 8px;
+  }
+  .disclaimer-icon {
+    font-size: 13px;
+    color: #9a9a9a;
+    margin-right: 4px;
+  }
+  .disclaimer-text {
+    flex: 1;
+    font-size: 12px;
+    color: #9a9a9a;
+    lines: 6;
+  }
+  .progress-track {
+    position: relative;
+    margin-top: 12px;
+    height: 14px;
+  }
+  .progress-line {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 6px;
+    height: 2px;
+    border-radius: 1px;
+    background-color: rgba(255, 255, 255, 0.28);
+  }
+  .progress-inner {
+    position: absolute;
+    left: 0;
+    top: 6px;
+    height: 2px;
+    border-radius: 1px;
+    background-color: #ffffff;
+  }
+  .progress-thumb {
+    position: absolute;
+    right: -4px;
+    top: -3px;
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    background-color: #ffffff;
+  }
+  .cta-bar {
+    position: absolute;
+    left: 12px;
+    right: 12px;
+    bottom: 0;
+    height: 46px;
+    border-radius: 8px;
+    background-color: rgba(42, 42, 46, 0.92);
+    flex-direction: row;
+    align-items: center;
+    padding-left: 13px;
+    padding-right: 13px;
+  }
+  .cta-icon {
+    font-size: 18px;
+    color: #ffffff;
+    margin-right: 8px;
+  }
+  .cta-text {
+    flex: 1;
+    font-size: 15px;
+    color: #ffffff;
+    font-weight: 500;
+  }
+  .cta-arrow {
+    font-size: 18px;
+    color: #ffffff;
+    opacity: 0.9;
+  }
+  .top-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 14px;
+    padding-right: 14px;
+    padding-bottom: 6px;
+  }
+  .top-btn {
+    padding: 7px;
+  }
+  .top-icon {
+    font-size: 32px;
+    line-height: 32px;
+    color: #ffffff;
+  }
+  .pip-box {
+    position: relative;
+    width: 22px;
+    height: 18px;
+  }
+  .pip-outline {
+    width: 22px;
+    height: 18px;
+    border-width: 2px;
+    border-color: #ffffff;
+    border-radius: 4px;
+  }
+  .pip-inner {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 8px;
+    height: 7px;
+    background-color: #ffffff;
+    border-radius: 2px;
+  }
+</style>
