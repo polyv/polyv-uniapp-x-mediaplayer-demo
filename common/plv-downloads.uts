@@ -1,0 +1,75 @@
+import { plvConfigSetDownloadSetting, plvDownloadAddDownloader, plvDownloadGetDownloadList, plvDownloadStartDownloader, plvDownloadStopDownloader, plvDownloadDeleteVideo } from '@/uni_modules/plv-media-player'
+import { plvEnsurePlayToken, plvViewerIdOrDefault } from './plv-biz-token.uts'
+import { PlvCatalogItem } from './plv-media-catalog.uts'
+export type PlvDownloadRow = { vid: string, title: string, cover: string, duration: number, level: number, fileSize: number, progress: number, speed: number, status: string, error: string }
+function textField(row: UTSJSONObject, key: string): string { const value = row[key]; return value == null ? '' : '' + value }
+function fallback(value: string, other: string): string { return value.length > 0 ? value : other }
+function numberField(row: UTSJSONObject, key: string): number { const value = parseFloat(textField(row, key)); return Number.isFinite(value) ? value : 0 }
+function failure(result: UTSJSONObject): string {
+  const code = numberField(result, 'code')
+  if (result['isSuccess'] == false || code != 0 || textField(result, 'errMsg').length > 0) return fallback(textField(result, 'errMsg'), fallback(textField(result, 'message'), '下载操作失败'))
+  return ''
+}
+export function plvReadDownloads(done: (rows: PlvDownloadRow[], error: string) => void) {
+  let completed = false
+  const finish = (rows: PlvDownloadRow[], error: string) => { if (completed) return; completed = true; done(rows, error) }
+  const timeout = setTimeout(() => { finish([], '读取下载列表超时，请重试') }, 15000)
+  plvDownloadGetDownloadList(null, (raw: any) => {
+    if (completed) return
+    clearTimeout(timeout)
+    const result = raw as UTSJSONObject; const error = failure(result)
+    const list = result['downloadList'] as UTSJSONObject[] | null
+    if (list == null) { finish([], error.length > 0 ? error : '无法读取下载列表'); return }
+    const rows: PlvDownloadRow[] = []
+    for (const item of list) {
+      const vid = textField(item, 'vid'); if (vid.length == 0) continue
+      const metadata = uni.getStorageSync('plv_download_meta_' + vid) as UTSJSONObject | null
+      const progress = Math.min(100, Math.max(0, numberField(item, 'progress')))
+      rows.push({vid: vid, title: fallback(textField(item, 'title'), metadata == null ? vid : textField(metadata, 'title')),
+        cover: fallback(textField(item, 'cover'), metadata == null ? '' : textField(metadata, 'cover')),
+        duration: numberField(item, 'duration') > 0 ? numberField(item, 'duration') : (metadata == null ? 0 : numberField(metadata, 'duration')),
+        level: numberField(item, 'level') > 0 ? numberField(item, 'level') : (metadata == null ? 1 : Math.max(1, numberField(metadata, 'level'))), fileSize: numberField(item, 'fileSize'), progress: progress,
+        speed: numberField(item, 'bytesPerSeconds'), status: fallback(textField(item, 'status'), 'unknown'), error: textField(item, 'errMsg')})
+    }
+    finish(rows, error)
+  })
+}
+export function plvAddDownload(item: PlvCatalogItem, level: number, done: (error: string) => void) {
+  plvReadDownloads((rows: PlvDownloadRow[], error: string) => {
+    if (error.length > 0) { done(error); return }
+    const existing = rows.find((row: PlvDownloadRow): boolean => row.vid == item.vid)
+    if (existing != null && existing.level != level) { done('该视频已有其他清晰度的下载，请先删除原任务'); return }
+    if (existing != null && existing.status == 'finished') { done('该视频已下载完成'); return }
+    addAuthorizedDownload(item, level, done)
+  })
+}
+function addAuthorizedDownload(item: PlvCatalogItem, level: number, done: (error: string) => void) {
+  plvEnsurePlayToken(item.vid, '', (token: string, error: string, viewer: string) => {
+    if (token.length == 0) { done(error); return }
+    plvConfigSetDownloadSetting({vid: item.vid, token: token, viewerId: plvViewerIdOrDefault(''), maxRunningCount: 3}, (configured: any) => {
+      const configError = failure(configured as UTSJSONObject)
+      if (configError.length > 0) { done(configError); return }
+      plvDownloadAddDownloader({vid: item.vid, level: level, downloadArr: [{vid: item.vid, level: level}]}, (raw: any) => {
+        const result = raw as UTSJSONObject; const addError = failure(result)
+        if (addError.length > 0) { done(addError); return }
+        if (result['isSuccess'] != true) { done('创建下载任务失败'); return }
+        uni.setStorageSync('plv_download_meta_' + item.vid, {title: item.title, cover: item.cover, duration: item.duration, level: level})
+        plvDownloadStartDownloader({vid: item.vid}, (started: any) => { done(failure(started as UTSJSONObject)) })
+      })
+    })
+  })
+}
+export function plvPauseDownload(vid: string, done: (error: string) => void) {
+  plvDownloadStopDownloader({vid: vid}, (raw: any) => { done(failure(raw as UTSJSONObject)) })
+}
+export function plvResumeDownload(row: PlvDownloadRow, done: (error: string) => void) {
+  plvAddDownload({vid: row.vid, title: row.title, cover: row.cover, duration: row.duration}, row.level, done)
+}
+export function plvRemoveDownload(vid: string, done: (error: string) => void) {
+  plvDownloadDeleteVideo({vid: vid}, (raw: any) => {
+    const error = failure(raw as UTSJSONObject)
+    if (error.length == 0) uni.removeStorageSync('plv_download_meta_' + vid)
+    done(error)
+  })
+}
+export function plvFileSize(bytes: number): string { return bytes > 0 ? (bytes / 1024 / 1024).toFixed(1) + ' MB' : '-- MB' }

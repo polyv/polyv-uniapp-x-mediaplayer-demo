@@ -1,6 +1,6 @@
 # 保利威 MediaPlayer 集成指南
 
-适用于 `plv-media-player` 2.7.5，支持 uni-app x、Vue 3、UTS 标准模式下的 Android、iOS 和 HarmonyOS App。
+适用于 `plv-media-player` 2.7.6，支持 uni-app x、Vue 3、UTS 标准模式下的 Android、iOS 和 HarmonyOS App。
 
 ## 1. 如何集成
 
@@ -9,6 +9,8 @@
 3. 按 easycom 规则挂载 `<plv-player>` 并设置宽高。收到 `view-init` 后，使用事件的 `sessionId` 设置媒体。组件自动创建并在卸载时销毁自建会话。
 
 HBuilderX 配置要求 4.61+。Android 最低 API 21，支持 arm64-v8a、armeabi-v7a。iOS 最低 15.0，支持 arm64 真机。依赖由 HBuilderX 按平台配置解析。 [SDK 与构建依赖](./DEPENDENCIES.md)
+
+插件在首次使用原生 SDK 前自动设置名称后缀 `uniapp`，由原生 SDK 应用于其 User-Agent 和支持的播放统计。升级无需修改调用，也无需为此调用 `plvConfigSetup`。业务请求和第三方 URL 的自定义请求头继续按原方式配置。
 
 ### 最小播放示例
 
@@ -124,4 +126,25 @@ VID 播放时可直接提交业务服务签发的 token。普通 URL 媒体使�
 | 窗口防截屏 | 支持 | 返回 9010004 | 返回 9010004 |
 | 截图 | 尺寸和路径或 URI | 尺寸、临时路径、JPEG 字节数 | 尺寸、JPEG 字节数 |
 
-导入插件后，可在 `uni_modules/plv-media-player/utssdk/interface.uts` 查看共享参数与回调类型，在 `uni_modules/plv-media-player/components/plv-player/commandOptions.uts` 查看组件 ref 的参数类型。
+导入市场插件后，参数和回调字段可在插件目录内的 `utssdk/interface.uts` 和 `components/plv-player/commandOptions.uts` 查看。
+
+
+## 播放器中心、可复用皮肤与下载
+
+DemoX 提供 `pages/player-center/player-center.uvue` 与 `pages/download-center/download-center.uvue`。`components/plv-player-skin` 只接收状态并发出交互事件，`components/plv-media-view` 负责原生会话和媒体加载；在线播放与本地播放使用同一组件，默认静音。原有播放调试页和 Feed 保留。原生变更需要重新编译对应端插件和运行包，不能只更新 Demo 页面配合旧市场基座使用。
+
+三端下载沿用兼容回调 API，调用顺序：
+
+1. 业务服务按 VID 签发 token。
+2. `plvConfigSetDownloadSetting({vid, token, viewerId, maxRunningCount: 3}, callback)`：viewerId 传申请凭证时的原文。下载凭证按 VID 存放在内存，由下载器的 SDK token 回调提供；不保存账号密钥。Android/HarmonyOS 支持 1–8 个并发任务，缺省 3。iOS 保留活跃播放器账号/观众冲突检查。
+3. `plvDownloadAddDownloader({vid, level, downloadArr: [{vid, level}]}, callback)`；level 为 1/2/3，使用当前媒体实际提供的清晰度。Demo 按 VID 展示任务，相同 VID 的不同清晰度需先删除再添加，完成任务重复添加会提示已完成。
+4. `plvDownloadStartDownloader({vid}, callback)` / `plvDownloadStopDownloader({vid}, callback)`；继续任务前刷新凭证并重新调用 add 取得 SDK 原任务，然后 start，保留本地已下载内容。SDK 重新准备时可能暂时将进度回报为 0，随后按已有文件恢复进度。失败任务可以按相同流程重试。
+5. `plvDownloadGetDownloadList(null, callback)` 等待 SDK 初始化及数据库恢复后返回任务。HarmonyOS 还等待已恢复任务的本地状态/清晰度，超时返回错误并允许重试；`plvDownloadIsVideoExist` 同样等待恢复。`downloadList` 字段含 vid、title、duration（秒）、level、fileSize（字节）、progress（0–100）、bytesPerSeconds、status、errMsg；cover 可由 Demo 本地元数据补齐。status 为 preparing / ready / downloading / stopped / finished / failed / unknown。页面只在可见时每秒查询，离页停止查询；读取超时可重试。任务准备阶段无实际清晰度时，Demo 使用保存的请求清晰度，以便失败或重启后继续。
+6. `plvDownloadDeleteVideo({vid}, callback)` 删除任务及本地资源，界面先确认。无任务的 start/stop 和初始化失败返回错误，避免界面显示虚假成功。
+
+已下载视频通过 `setMedia({source: {kind: 'local', vid, viewer: {viewerId}}})` 加载，再 `start()`。三端均接入 local 源，不请求业务 token；仅能选择 SDK 中已完成的任务，不支持任意文件路径。清晰度切换在本地播放界面禁用。
+
+- Android/HarmonyOS 在启动后先调用 `plvDownloadGetDownloadList` 等待 SDK 任务恢复，再加载 local。vid 必须非空，token/url/headers 不允许提供；level 必须为 0–3 整数，缺省/0 选择已完成档位，1–3 精确匹配。可选 viewerId 传原始业务 ID 并匹配任务观众；viewerName/param3–5 覆盖不受支持，返回 9010004。参数非法返回 9010001，找不到匹配档位/观众的完成任务返回 9010008。上述校验失败不改变媒体代次。从已恢复的 SDK 下载器取得原媒体资源与下载目录，由 SDK 读取本地加密视频；未完成或不存在的任务返回 9010008。文件被外部移除或损坏时由 SDK 报播放错误，不保证修复损坏文件。local 不支持预加载。
+- iOS 使用 SDK requestPriorityCache 读取完整加密媒体信息（有网时刷新元数据，无网或请求失败时使用 SDK 数据库缓存），设置已下载清晰度并优先播放本地文件，首帧额外校验 SDK localPlayback。iOS 原有能力快照中的 download.offline 保留 deferred 标记；兼容下载 API 和 local 源已接入，按实际验证范围使用。Android/HarmonyOS 的 download.offline 已更新为 supported。
+
+Android API 34 与 HarmonyOS 7.0 模拟器已验证进度、暂停、重启恢复、续传、完成、删除和无网络访问条件下的本地首帧。iOS 继续沿用原验证范围，不据此推断 iOS 进行中续传或断网通过。后台持续下载、锁屏下载、进程退出后继续下载和重启自动开始不在本次承诺范围，重启恢复任务后由用户继续；模拟器结果不替代全机型和真机验收。

@@ -1,0 +1,145 @@
+<template>
+  <view class="media-view" :id="'plv-media-view-' + sessionId">
+    <plv-player ref="player" class="native-player" :settings="settings" @view-init="ready" @play-status="statusChanged" @position-change="positionChanged" @first-frame="firstFrame" @play-error="playError" @session-error="commandError" />
+    <plv-player-skin :title="title" :playing="playing" :position="position" :duration="duration" :fullscreen="fullscreen" :controllable="controllable" :message="hint" :speed="speed" :quality="qualityLabel" :can-speed="canSpeed" :can-quality="levels.length > 1 && !offline" :allow-download="!offline && generation > 0" :bottom-inset="bottomInset" :side-inset="sideInset" @back="back" @play="togglePlayback" @seek="seek" @speed="chooseSpeed" @quality="chooseQuality" @download="download" @fullscreen="toggleFullscreen" @retry="retry" />
+  </view>
+</template>
+<script lang="uts">
+import { PlvMediaSource, PlvViewerPatch, PlvSessionSettingsPatch, PlvPlayerEvent, PlvSessionSuccess, PlvMediaPlayerFail, PlvCapabilitiesSuccess, PlvVolumeSuccess, PlvSpeedSuccess, PlvChangeLevelSuccess } from '@/uni_modules/plv-media-player'
+import { PlvComponentSessionOptions, PlvComponentSetMediaOptions, PlvComponentSeekToOptions, PlvComponentGetCapabilitiesOptions, PlvComponentSetVolumeOptions, PlvComponentGetVolumeOptions, PlvComponentSetSpeedOptions, PlvComponentChangeLevelOptions } from '@/uni_modules/plv-media-player/components/plv-player/commandOptions.uts'
+import { plvEnsurePlayToken, plvViewerIdOrDefault } from '@/common/plv-biz-token.uts'
+import { plvQuality } from '@/common/plv-media-catalog.uts'
+export default {
+  name: 'PlvMediaView',
+  props: {
+    vid: {type: String, default: ''}, title: {type: String, default: ''},
+    muted: {type: Boolean, default: true},
+    offline: {type: Boolean, default: false}, fullscreen: {type: Boolean, default: false},
+    bottomInset: {type: Number, default: 0}, sideInset: {type: Number, default: 12}
+  },
+  emits: ['back', 'fullscreen-change', 'download', 'duration-change', 'error'],
+  data() { return {settings: {autoPlay: false} as PlvSessionSettingsPatch, sessionId: '', epoch: 0, generation: 0,
+    playing: false, loading: false, status: '', error: '', position: 0.0, duration: 0.0,
+    speed: 1.0, level: 0, levels: [] as number[], canSpeed: false, canRotate: false, volumeReady: false, visible: true} },
+  computed: {
+    controllable(): boolean { return !this.loading && this.generation > 0 && this.error.length == 0 && (this.status == 'prepared' || this.status == 'playing' || this.status == 'paused' || this.status == 'buffering' || this.status == 'completed') },
+    hint(): string {
+      if (this.error.length > 0) return this.error + '（点击重试）'
+      if (this.vid.length == 0) return '请选择视频'
+      if (this.loading || this.status == 'preparing') return '正在准备播放…'
+      if (this.status == 'buffering') return '缓冲中…'
+      return ''
+    },
+    qualityLabel(): string { return plvQuality(this.level) }
+  },
+  watch: {vid(_value: string) { this.load() }},
+  beforeUnmount() { this.epoch++; if (this.fullscreen) this.currentPage().exitFullscreen(); this.sessionId = '' },
+  methods: {
+    player(): PlvPlayerComponentPublicInstance | null { return this.$refs['player'] as PlvPlayerComponentPublicInstance | null },
+    ready(event: PlvPlayerEvent) {
+      this.sessionId = event.sessionId
+      this.player()?.setVolume({volume: this.muted ? 0 : 1,
+        success: (_result: PlvVolumeSuccess) => { this.volumeReady = true; this.load() },
+        fail: (error: PlvMediaPlayerFail) => { this.error = error.errMsg; this.volumeReady = false }
+      } as PlvComponentSetVolumeOptions)
+    },
+    current(event: PlvPlayerEvent): boolean { return event.sessionId == this.sessionId && event.mediaGeneration == this.generation },
+    load() {
+      const player = this.player(); if (player == null || !this.volumeReady || this.sessionId.length == 0 || this.vid.length == 0) return
+      const epoch = ++this.epoch; const vid = this.vid; const id = this.sessionId
+      player.stop(); this.loading = true; this.error = ''; this.playing = false; this.generation = 0
+      this.position = 0; this.duration = 0; this.speed = 1; this.level = 0; this.levels = []; this.canSpeed = false
+      const apply = (token: string, viewer: string) => {
+        if (epoch != this.epoch || id != this.sessionId || !this.visible) return
+        const source: PlvMediaSource = {kind: this.offline ? 'local' : 'vid', vid: vid, viewer: {viewerId: viewer} as PlvViewerPatch}
+        if (!this.offline) source.token = token
+        player.setMedia({source: source,
+          success: (result: PlvSessionSuccess) => {
+            if (epoch != this.epoch || id != this.sessionId) return
+            this.loading = false; this.generation = result.mediaGeneration; this.status = 'preparing'
+            player.start({expectedMediaGeneration: this.generation, fail: this.commandError} as PlvComponentSessionOptions)
+            this.capabilities()
+          },
+          fail: (error: PlvMediaPlayerFail) => { if (epoch == this.epoch) { this.loading = false; this.error = error.errMsg; this.$emit('error', error.errMsg) } }
+        } as PlvComponentSetMediaOptions)
+      }
+      if (this.offline) { apply('', plvViewerIdOrDefault('')); return }
+      plvEnsurePlayToken(vid, '', (token: string, error: string, viewer: string) => {
+        if (epoch != this.epoch || id != this.sessionId || !this.visible) return
+        if (token.length == 0) { this.loading = false; this.error = error; return }
+        apply(token, plvViewerIdOrDefault(''))
+      })
+    },
+    statusChanged(event: PlvPlayerEvent) {
+      if (!this.current(event)) return
+      this.status = event.detail.status ?? ''
+      if (this.status == 'playing') this.playing = true
+      if (this.status == 'paused' || this.status == 'completed' || this.status == 'stopped') this.playing = false
+      if (this.status == 'prepared') this.capabilities()
+    },
+    positionChanged(event: PlvPlayerEvent) {
+      if (!this.current(event)) return
+      this.position = event.detail.currentPosition ?? this.position
+      const duration = event.detail.duration ?? 0
+      if (duration > 0 && this.duration != duration) { this.duration = duration; this.$emit('duration-change', duration) }
+    },
+    firstFrame(event: PlvPlayerEvent) { if (this.current(event)) { this.loading = false; this.capabilities(); console.log('[PLV-CENTER] first-frame source=' + (this.offline ? 'local' : 'vid')); this.player()?.getVolume({success: (result: PlvVolumeSuccess) => { console.log('[PLV-CENTER] volume=' + result.volume) }} as PlvComponentGetVolumeOptions) } },
+    playError(event: PlvPlayerEvent) { if (this.current(event)) { this.loading = false; this.playing = false; this.error = event.detail.error?.errMsg ?? '播放失败'; console.log('[PLV-CENTER] error phase=' + event.detail.error?.phase + ' sdkCode=' + event.detail.error?.sdkCode) } },
+    commandError(error: PlvMediaPlayerFail) { uni.showToast({title: error.errMsg, icon: 'none'}); this.$emit('error', error.errMsg) },
+    capabilities() {
+      const generation = this.generation
+      this.player()?.getCapabilities({success: (result: PlvCapabilitiesSuccess) => {
+        if (result.sessionId != this.sessionId || result.mediaGeneration != generation || generation != this.generation) return
+        for (const feature of result.features) {
+          if (feature.key == 'playback.speed') this.canSpeed = feature.status == 'supported'
+          if (feature.key == 'media.level') this.levels = feature.status == 'supported' ? feature.values : []
+          if (feature.key == 'window.orientation') this.canRotate = feature.status == 'supported'
+        }
+      }} as PlvComponentGetCapabilitiesOptions)
+    },
+    togglePlayback() {
+      if (this.loading) return
+      if (this.error.length > 0 || this.generation == 0 || this.status == 'completed') { this.load(); return }
+      if (this.playing) this.player()?.pause({expectedMediaGeneration: this.generation, fail: this.commandError} as PlvComponentSessionOptions)
+      else this.player()?.start({expectedMediaGeneration: this.generation, fail: this.commandError} as PlvComponentSessionOptions)
+    },
+    retry() { if (this.error.length > 0) this.load() },
+    suspend() { this.visible = false; this.epoch++; this.loading = false; this.player()?.pause() },
+    activate() { this.visible = true },
+    seek(seconds: number) { if (this.controllable) this.player()?.seekTo({seconds: seconds, expectedMediaGeneration: this.generation, fail: this.commandError} as PlvComponentSeekToOptions) },
+    chooseSpeed() {
+      if (!this.controllable || !this.canSpeed) return
+      const epoch = this.epoch; const speeds = [0.5, 1, 1.25, 1.5, 2]
+      uni.showActionSheet({itemList: ['0.5×', '1.0×', '1.25×', '1.5×', '2.0×'], success: (res) => {
+        if (epoch != this.epoch) return
+        this.player()?.setSpeed({speed: speeds[res.tapIndex], expectedMediaGeneration: this.generation,
+          success: (result: PlvSpeedSuccess) => { if (result.mediaGeneration == this.generation) this.speed = result.speed }, fail: this.commandError} as PlvComponentSetSpeedOptions)
+      }})
+    },
+    chooseQuality() {
+      if (!this.controllable || this.offline) return
+      const levels = this.levels.slice(); const epoch = this.epoch
+      uni.showActionSheet({itemList: levels.map((level: number): string => plvQuality(level)), success: (res) => {
+        if (epoch != this.epoch) return
+        this.player()?.changeLevel({level: levels[res.tapIndex], expectedMediaGeneration: this.generation,
+          success: (result: PlvChangeLevelSuccess) => { if (result.mediaGeneration == this.generation) this.level = result.requestedLevel }, fail: this.commandError} as PlvComponentChangeLevelOptions)
+      }})
+    },
+    download() { this.$emit('download', this.levels.filter((level: number): boolean => level > 0)) },
+    back() { if (this.fullscreen) this.toggleFullscreen(); else this.$emit('back') },
+    currentPage(): UniPage { const pages = getCurrentPages(); return pages[pages.length - 1] },
+    toggleFullscreen() {
+      if (this.fullscreen) {
+        this.currentPage().exitFullscreen({success: () => { this.$emit('fullscreen-change', false) }, fail: (error) => { uni.showToast({title: error.errMsg, icon: 'none'}) }})
+      } else {
+        const element = uni.getElementById('plv-media-view-' + this.sessionId)
+        element?.requestFullscreen({navigationUI: 'hide', orientation: 'landscape', success: () => { console.log('[PLV-CENTER] fullscreen=true'); this.$emit('fullscreen-change', true) }, fail: (error) => { uni.showToast({title: error.errMsg, icon: 'none'}) }})
+      }
+    }
+  }
+}
+</script>
+<style>
+.media-view { width: 100%; height: 100%; background-color: #000000; }
+.native-player { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 100%; height: 100%; }
+</style>

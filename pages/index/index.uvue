@@ -4,6 +4,8 @@
     <text class="hint">播放凭证由服务端签发后传入播放器。HBuilderX 4.61+，自定义基座 + 三端原生库。</text>
     <button class="btn" type="primary" @click="go('config')">1. 播放凭证</button>
     <button class="btn" type="primary" @click="go('player')">2. 播放</button>
+    <button class="btn" type="primary" @click="go('player-center')">播放器中心</button>
+    <button class="btn" type="primary" @click="go('download-center')">下载中心</button>
     <button class="btn" type="warn" @click="go('ext-feed')">3. Feed（短视频上下滑流）</button>
   </scroll-view>
 </template>

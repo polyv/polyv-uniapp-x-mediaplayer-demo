@@ -1,50 +1,88 @@
 <template>
-  <scroll-view class="page">
+  <view class="page">
     <!-- #ifdef APP-ANDROID || APP-HARMONY || APP-IOS -->
-    <plv-player
-      ref="sessionPlayer"
-      class="native-player"
-      :settings="sessionSettings"
-      @view-init="onSessionReady"
-      @play-status="onSessionStatus"
-      @position-change="onSessionPosition"
-      @play-error="onSessionError"
-      @session-error="onCommandError"
-    />
-    <!-- #endif -->
-    <text class="mode-tag">bridge: native (standard mode)</text>
-    <text class="tip">模拟客户业务后台。已配置服务地址时，setVid 会先按 vid 取 token，再设置凭证并播放。手动粘贴的 token 只在服务不可用时兜底。</text>
-    <text class="mode-tag">{{ bizBase.length > 0 ? ('业务服务：' + bizBase) : '业务服务：未配置，使用手动 token' }}</text>
-
-    <text class="label">vid</text>
-    <input class="input" v-model="vid" placeholder="vid" />
-    <text class="label">播放 token</text>
-    <textarea class="textarea" v-model="token" placeholder="服务端返回的播放 token" :maxlength="-1" />
-    <text class="label">viewerId（可选）</text>
-    <input class="input" v-model="viewerId" placeholder="观众 ID" />
-    <view class="row wrap">
-      <button size="mini" type="primary" @click="savePlayToken">设置播放凭证</button>
-      <button size="mini" type="primary" @click="setVid">setVid</button>
-      <button size="mini" type="primary" @click="start">start</button>
-      <button size="mini" @click="pause">pause</button>
-      <button size="mini" @click="stop">stop</button>
-      <button size="mini" @click="seek">seek+10s</button>
+    <view :class="expanded ? 'stage expanded' : 'stage'">
+      <plv-player
+        ref="sessionPlayer"
+        class="native-player"
+        :settings="sessionSettings"
+        @view-init="onSessionReady"
+        @play-status="onSessionStatus"
+        @position-change="onSessionPosition"
+        @first-frame="onFirstFrame"
+        @play-error="onSessionError"
+        @session-error="onCommandError"
+      />
+      <view class="skin">
+        <view class="tap-area" @click="toggleControls"></view>
+        <view v-if="controlsVisible && !locked" class="skin-top">
+          <text class="brand">POLYV · MediaPlayer</text>
+          <button v-if="expanded || canControl" class="skin-button" size="mini" @click="toggleMenu">{{ menuOpen ? '关闭' : '更多' }}</button>
+        </view>
+        <view v-if="statusHint.length > 0 && !locked" class="skin-message" @click="toggleControls">
+          <text class="skin-text">{{ statusHint }}</text>
+        </view>
+        <view v-if="controlsVisible && locked" class="unlock">
+          <button class="skin-button" size="mini" @click="toggleLock">解锁</button>
+        </view>
+        <view v-if="controlsVisible && !locked" class="skin-bottom" :style="bottomControlsStyle">
+          <view v-if="menuOpen" class="skin-row options">
+            <button v-if="canSpeed" class="skin-button" size="mini" :disabled="!canControl" @click="cycleSpeed">{{ speed }}×</button>
+            <button v-if="canVolume" class="skin-button" size="mini" :disabled="!canControl" @click="toggleMute">{{ muted ? '恢复声音' : '静音' }}</button>
+            <button v-if="canAudioOnly" class="skin-button" size="mini" :disabled="!canControl" @click="toggleAudioOnly">{{ audioOnly ? '恢复画面' : '纯音频' }}</button>
+            <button v-if="levels.length > 1" class="skin-button" size="mini" :disabled="!canControl" @click="cycleLevel">{{ levelLabel(requestedLevel) }}</button>
+            <button v-if="expanded" class="skin-button" size="mini" @click="toggleLock">锁定</button>
+          </view>
+          <slider class="timeline" :value="sliderValue" :disabled="!canControl || duration <= 0"
+            :min="0" :max="1000" :step="1" :block-size="12" block-color="#ffffff"
+            active-color="#42a6ff" background-color="#657184"
+            @changing="onScrub" @change="onScrubEnd" @touchcancel="cancelScrub" />
+          <view class="skin-row">
+            <button class="skin-button" size="mini" :disabled="sessionId.length == 0 || loading" @click="togglePlayback">{{ playbackLabel }}</button>
+            <text class="clock">{{ formatTime(scrubbing ? scrubPosition : position) }} / {{ duration > 0 ? formatTime(duration) : '--:--' }}</text>
+            <button class="skin-button" size="mini" @click="toggleExpanded">{{ expanded ? '退出放大' : '放大' }}</button>
+          </view>
+        </view>
+      </view>
     </view>
+    <!-- #endif -->
+    <scroll-view v-show="!expanded" class="config" :scroll-y="true">
+      <text class="mode-tag">bridge: native (standard mode)</text>
+      <text class="tip">模拟客户业务后台。已配置服务地址时，setVid 会先按 vid 取 token，再设置凭证并播放。手动粘贴的 token 只在服务不可用时兜底。</text>
+      <text class="mode-tag">{{ bizBase.length > 0 ? ('业务服务：' + bizBase) : '业务服务：未配置，使用手动 token' }}</text>
 
-    <text class="log">{{ log }}</text>
-    <text class="events">状态 {{ latestStatus }}</text>
-    <text class="events">错误 {{ latestError }}</text>
-    <text class="events">进度 {{ latestPosition }}</text>
-  </scroll-view>
+      <text class="label">vid</text>
+      <input class="input" v-model="vid" placeholder="vid" />
+      <text class="label">播放 token</text>
+      <textarea class="textarea" v-model="token" placeholder="服务端返回的播放 token" :maxlength="-1" />
+      <text class="label">viewerId（可选）</text>
+      <input class="input" v-model="viewerId" placeholder="观众 ID" />
+      <view class="row wrap">
+        <button size="mini" type="primary" @click="savePlayToken">设置播放凭证</button>
+        <button size="mini" type="primary" @click="setVid">setVid</button>
+        <button size="mini" type="primary" @click="start">start</button>
+        <button size="mini" @click="pause">pause</button>
+        <button size="mini" @click="stop">stop</button>
+        <button size="mini" @click="seek">seek+10s</button>
+      </view>
+
+      <text class="log">{{ log }}</text>
+      <text class="events">状态 {{ latestStatus }}</text>
+      <text class="events">错误 {{ latestError }}</text>
+      <text class="events">进度 {{ latestPosition }}</text>
+    </scroll-view>
+  </view>
 </template>
 
 <script lang="uts">
   // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
   import {
-    PlvMediaSource, PlvSessionSuccess, PlvMediaPlayerFail, PlvPlayerEvent, PlvSessionSettingsPatch, PlvViewerPatch
+    PlvMediaSource, PlvSessionSuccess, PlvMediaPlayerFail, PlvPlayerEvent, PlvSessionSettingsPatch, PlvViewerPatch,
+    PlvCapabilitiesSuccess, PlvSpeedSuccess, PlvVolumeSuccess, PlvSetAudioOnlySuccess, PlvChangeLevelSuccess
   } from '@/uni_modules/plv-media-player'
   import {
-    PlvComponentSessionOptions, PlvComponentSetMediaOptions, PlvComponentSeekToOptions
+    PlvComponentSessionOptions, PlvComponentSetMediaOptions, PlvComponentSeekToOptions, PlvComponentGetCapabilitiesOptions,
+    PlvComponentSetSpeedOptions, PlvComponentSetVolumeOptions, PlvComponentSetAudioOnlyOptions, PlvComponentChangeLevelOptions
   } from '@/uni_modules/plv-media-player/components/plv-player/commandOptions.uts'
   // #endif
   import { plvBizBaseUrl, plvEnsurePlayToken, plvSaveBizBaseUrl, plvViewerIdOrDefault } from '@/common/plv-biz-token.uts'
@@ -56,7 +94,27 @@
         sessionId: '',
         sessionSettings: {autoPlay: false} as PlvSessionSettingsPatch,
         requestEpoch: 0,
+        mediaGeneration: 0,
+        loading: false,
+        playing: false,
+        buffering: false,
+        duration: 0.0,
+        scrubbing: false,
+        scrubPosition: 0.0,
+        controlsVisible: true,
+        menuOpen: false,
+        locked: false,
+        canSpeed: false,
+        canVolume: false,
+        canAudioOnly: false,
+        speed: 1.0,
+        muted: false,
+        audioOnly: false,
+        levels: [] as number[],
+        requestedLevel: 0,
         // #endif
+        expanded: false,
+        expandedBottomInset: 0,
         vid: '',
         token: '',
         viewerId: '',
@@ -68,6 +126,41 @@
         autoStart: false,
         bizBase: ''
       }
+    },
+    // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+    computed: {
+      canControl(): boolean {
+        return !this.loading && this.mediaGeneration > 0 && this.latestError.length == 0 &&
+          (this.latestStatus == 'prepared' || this.latestStatus == 'playing' || this.latestStatus == 'paused' ||
+           this.latestStatus == 'buffering' || this.latestStatus == 'completed')
+      },
+      playbackLabel(): string {
+        if (this.playing) return '暂停'
+        return this.latestStatus == 'completed' || this.latestError.length > 0 ? '重播' : '播放'
+      },
+      statusHint(): string {
+        if (this.latestError.length > 0) return this.latestError
+        if (this.loading || this.latestStatus == 'preparing') return '正在准备播放…'
+        if (this.buffering) return '缓冲中…'
+        if (this.audioOnly) return '纯音频播放'
+        if (this.mediaGeneration == 0) return '填写 VID 后播放'
+        return ''
+      },
+      bottomControlsStyle(): string {
+        return this.expanded ? 'bottom:' + this.expandedBottomInset + 'px' : ''
+      },
+      sliderValue(): number {
+        if (this.duration <= 0) return 0
+        return Math.round(1000 * Math.min(1, Math.max(0, (this.scrubbing ? this.scrubPosition : this.position) / this.duration)))
+      }
+    },
+    // #endif
+    onBackPress(): boolean {
+      if (!this.expanded) return false
+      // #ifdef APP-ANDROID || APP-HARMONY || APP-IOS
+      this.toggleExpanded()
+      // #endif
+      return true
     },
     onLoad(options : OnLoadOptions) {
       const storedVid = uni.getStorageSync('plv_play_vid')
@@ -123,9 +216,25 @@
         }
       },
       onSessionStatus(event: PlvPlayerEvent) {
-        this.latestStatus = event.detail.status ?? ''
+        if (event.sessionId != this.sessionId) return
+        const status = event.detail.status ?? ''
+        this.latestStatus = status
+        this.buffering = status == 'buffering' || event.detail.buffering == true
+        if (status == 'playing') this.playing = true
+        if (status == 'paused' || status == 'completed' || status == 'stopped') {
+          this.playing = false
+          this.controlsVisible = true
+        }
+        if (status == 'stopped') {
+          this.resetMediaView()
+          this.latestError = ''
+        }
+        if (status == 'prepared') this.refreshCapabilities(event.mediaGeneration)
       },
       onSessionPosition(event: PlvPlayerEvent) {
+        if (event.sessionId != this.sessionId || event.mediaGeneration != this.mediaGeneration) return
+        const duration = event.detail.duration
+        if (duration != null && duration > 0) this.duration = duration
         const position = event.detail.currentPosition
         if (position == null) return
         this.position = position
@@ -133,10 +242,139 @@
         console.log('[PLV-SMOKE] position ' + position)
       },
       onSessionError(event: PlvPlayerEvent) {
+        if (event.sessionId != this.sessionId) return
+        this.playing = false
+        this.controlsVisible = true
         this.latestError = event.detail.error?.errMsg ?? ''
+      },
+      onFirstFrame(event: PlvPlayerEvent) {
+        if (event.sessionId == this.sessionId) this.refreshCapabilities(event.mediaGeneration)
+      },
+      refreshCapabilities(generation: number) {
+        this.sessionPlayerRef()?.getCapabilities({
+          success: (result: PlvCapabilitiesSuccess) => {
+            if (result.sessionId != this.sessionId || result.mediaGeneration != generation ||
+                this.mediaGeneration != generation) return
+            for (const feature of result.features) {
+              const supported = feature.status == 'supported'
+              if (feature.key == 'playback.speed') this.canSpeed = supported
+              if (feature.key == 'playback.volume') this.canVolume = supported
+              if (feature.key == 'media.audioOnly') this.canAudioOnly = supported
+              if (feature.key == 'media.level') this.levels = supported ? feature.values : []
+            }
+          }
+        } as PlvComponentGetCapabilitiesOptions)
+      },
+      resetMediaView() {
+        this.mediaGeneration = 0
+        this.position = 0
+        this.duration = 0
+        this.latestPosition = ''
+        this.scrubbing = false
+        this.menuOpen = false
+        this.buffering = false
+        this.playing = false
+        this.audioOnly = false
+        this.levels = []
+        this.requestedLevel = 0
+      },
+      toggleControls() {
+        if (this.scrubbing) return
+        this.controlsVisible = !this.controlsVisible
+        if (!this.controlsVisible) this.menuOpen = false
+      },
+      toggleMenu() {
+        this.menuOpen = !this.menuOpen
+        if (this.menuOpen && this.mediaGeneration > 0) this.refreshCapabilities(this.mediaGeneration)
+      },
+      toggleLock() {
+        this.locked = !this.locked
+        this.menuOpen = false
+      },
+      toggleExpanded() {
+        if (!this.expanded) {
+          const window = uni.getWindowInfo()
+          this.expandedBottomInset = window.safeAreaInsets.bottom
+          // Some Android runtimes report a zero safe inset in gesture navigation.
+          // #ifdef APP-ANDROID
+          this.expandedBottomInset = Math.max(this.expandedBottomInset, 24,
+            window.screenHeight - window.windowHeight - window.statusBarHeight)
+          // #endif
+        }
+        this.expanded = !this.expanded
+        this.controlsVisible = true
+        this.menuOpen = false
+        this.locked = false
+      },
+      togglePlayback() {
+        if (this.loading) return
+        if (this.playing) this.pause()
+        else if (this.mediaGeneration == 0 || this.latestError.length > 0 || this.latestStatus == 'completed') this.setVid()
+        else this.start()
+      },
+      formatTime(seconds: number): string {
+        const total = Math.floor(Math.max(0, seconds))
+        const minutes = Math.floor(total / 60)
+        const remainder = total % 60
+        return (minutes < 10 ? '0' : '') + minutes + ':' + (remainder < 10 ? '0' : '') + remainder
+      },
+      onScrub(event: UniSliderChangeEvent) {
+        if (!this.canControl || this.duration <= 0) return
+        this.scrubbing = true
+        this.scrubPosition = this.duration * event.detail.value / 1000
+      },
+      cancelScrub() { this.scrubbing = false },
+      onScrubEnd(event: UniSliderChangeEvent) {
+        this.scrubbing = false
+        if (!this.canControl || this.duration <= 0) return
+        this.sessionPlayerRef()?.seekTo({
+          seconds: this.duration * event.detail.value / 1000,
+          expectedMediaGeneration: this.mediaGeneration, fail: this.onCommandError
+        } as PlvComponentSeekToOptions)
+      },
+      cycleSpeed() {
+        if (!this.canControl) return
+        const next = this.speed == 1 ? 1.25 : (this.speed == 1.25 ? 1.5 : (this.speed == 1.5 ? 2 : 1))
+        this.sessionPlayerRef()?.setSpeed({
+          speed: next, expectedMediaGeneration: this.mediaGeneration,
+          success: (result: PlvSpeedSuccess) => { if (result.mediaGeneration == this.mediaGeneration) this.speed = result.speed },
+          fail: this.onCommandError
+        } as PlvComponentSetSpeedOptions)
+      },
+      toggleMute() {
+        if (!this.canControl) return
+        this.sessionPlayerRef()?.setVolume({
+          volume: this.muted ? 1 : 0, expectedMediaGeneration: this.mediaGeneration,
+          success: (result: PlvVolumeSuccess) => { if (result.mediaGeneration == this.mediaGeneration) this.muted = result.volume == 0 },
+          fail: this.onCommandError
+        } as PlvComponentSetVolumeOptions)
+      },
+      toggleAudioOnly() {
+        if (!this.canControl) return
+        this.sessionPlayerRef()?.setAudioOnly({
+          audioOnly: !this.audioOnly, expectedMediaGeneration: this.mediaGeneration,
+          success: (result: PlvSetAudioOnlySuccess) => { if (result.mediaGeneration == this.mediaGeneration) this.audioOnly = result.audioOnly },
+          fail: this.onCommandError
+        } as PlvComponentSetAudioOnlyOptions)
+      },
+      levelLabel(level: number): string {
+        if (level == 1) return '流畅'
+        if (level == 2) return '高清'
+        if (level == 3) return '超清'
+        return '自动'
+      },
+      cycleLevel() {
+        if (!this.canControl || this.levels.length < 2) return
+        const next = this.levels[(this.levels.indexOf(this.requestedLevel) + 1) % this.levels.length]
+        this.sessionPlayerRef()?.changeLevel({
+          level: next, expectedMediaGeneration: this.mediaGeneration,
+          success: (result: PlvChangeLevelSuccess) => { if (result.mediaGeneration == this.mediaGeneration) this.requestedLevel = result.requestedLevel },
+          fail: this.onCommandError
+        } as PlvComponentChangeLevelOptions)
       },
       onCommandError(error: PlvMediaPlayerFail) {
         this.log = error.errMsg
+        uni.showToast({title: error.errMsg, icon: 'none'})
       },
       // #endif
       rememberPlayToken() {
@@ -162,33 +400,50 @@
         const viewerId = plvViewerIdOrDefault(this.viewerId)
         const manualToken = this.token
         const base = plvBizBaseUrl()
-        const epoch = ++this.requestEpoch
+        if (this.loading) return
         if (player == null || id.length == 0 || vid.length == 0) {
           this.log = player == null || id.length == 0 ? '播放器尚未就绪' : '请填写 vid'
+          uni.showToast({title: this.log, icon: 'none'})
           return
         }
+        const epoch = ++this.requestEpoch
+        this.loading = true
         const isCurrent = (): boolean => epoch == this.requestEpoch && this.sessionId == id &&
           this.vid == vid && plvViewerIdOrDefault(this.viewerId) == viewerId && plvBizBaseUrl() == base
         const load = (token: string, error: string) => {
-          if (!isCurrent()) return
+          if (!isCurrent()) {
+            if (epoch == this.requestEpoch) this.loading = false
+            return
+          }
+          this.loading = false
           if (token.length == 0) {
             this.log = error
+            uni.showToast({title: error, icon: 'none'})
             return
           }
           const viewer: PlvViewerPatch = {viewerId: viewerId}
           const source: PlvMediaSource = {kind: 'vid', vid: vid, level: 0, token: token, viewer: viewer}
-          this.position = 0
+          this.loading = true
           this.latestError = ''
           player.setMedia({
             source: source,
             success: (result: PlvSessionSuccess) => {
-              if (!isCurrent()) return
+              if (epoch != this.requestEpoch || this.sessionId != id) return
+              this.loading = false
+              this.resetMediaView()
+              this.latestStatus = 'preparing'
+              this.mediaGeneration = result.mediaGeneration
               this.log = result.errMsg
+              this.refreshCapabilities(result.mediaGeneration)
               player.start({expectedMediaGeneration: result.mediaGeneration,
-                fail: (failure: PlvMediaPlayerFail) => { if (isCurrent()) this.onCommandError(failure) }
+                fail: (failure: PlvMediaPlayerFail) => { if (epoch == this.requestEpoch && this.sessionId == id) this.onCommandError(failure) }
               } as PlvComponentSessionOptions)
             },
-            fail: (failure: PlvMediaPlayerFail) => { if (isCurrent()) this.onCommandError(failure) }
+            fail: (failure: PlvMediaPlayerFail) => {
+              if (epoch != this.requestEpoch || this.sessionId != id) return
+              this.loading = false
+              this.onCommandError(failure)
+            }
           } as PlvComponentSetMediaOptions)
         }
         if (base.length > 0) {
@@ -205,12 +460,13 @@
       },
       pause() {
         this.requestEpoch++
+        this.loading = false
         this.sessionPlayerRef()?.pause({fail: this.onCommandError} as PlvComponentSessionOptions)
       },
       stop() {
         this.requestEpoch++
+        this.loading = false
         this.sessionPlayerRef()?.stop({fail: this.onCommandError} as PlvComponentSessionOptions)
-        this.position = 0
       },
       seek() {
         this.sessionPlayerRef()?.seekTo({seconds: this.position + 10, fail: this.onCommandError} as PlvComponentSeekToOptions)
@@ -221,12 +477,26 @@
 </script>
 
 <style>
-  .page { padding: 12px; }
-  .native-player {
-    width: 100%;
-    height: 200px;
-    background-color: #000000;
-  }
+  .page { flex: 1; }
+  .config { flex: 1; padding: 12px; }
+  .stage { position: relative; width: 100%; height: 421.875rpx; background-color: #000000; }
+  .expanded { flex: 1; height: auto; }
+  .native-player, .skin, .tap-area { position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+  .native-player, .skin { width: 100%; height: 100%; }
+  .skin { z-index: 1; }
+  .skin-top, .skin-bottom { position: absolute; left: 0; right: 0; background-color: rgba(0, 0, 0, 0.72); }
+  .skin-top { top: 0; flex-direction: row; align-items: center; justify-content: space-between; padding-left: 12px; padding-right: 8px; }
+  .skin-bottom { bottom: 0; padding-left: 8px; padding-right: 8px; padding-bottom: 4px; }
+  .brand, .skin-text, .clock { color: #ffffff; font-size: 12px; }
+  .brand { font-weight: 600; }
+  .skin-message { position: absolute; top: 42%; left: 12px; right: 12px; align-items: center; }
+  .skin-text { padding: 6px; background-color: rgba(0, 0, 0, 0.72); text-align: center; lines: 2; }
+  .unlock { position: absolute; top: 48%; left: 12px; }
+  .skin-row { flex-direction: row; align-items: center; justify-content: space-between; }
+  .options { flex-wrap: wrap; justify-content: flex-start; }
+  .skin-button { margin: 0; padding-left: 8px; padding-right: 8px; font-size: 12px; color: #ffffff; background-color: rgba(40, 48, 62, 0.85); }
+  .options .skin-button { margin-right: 6px; margin-top: 4px; }
+  .timeline { margin: 0 4px; }
   .mode-tag { font-size: 11px; color: #888888; margin-top: 4px; margin-bottom: 4px; }
   .tip { font-size: 12px; color: #666666; margin-bottom: 8px; }
   .label { font-size: 13px; margin-top: 4px; margin-bottom: 4px; }

@@ -1,0 +1,109 @@
+<template>
+  <view class="page" :style="'padding-top:' + topInset + 'px'">
+    <view class="header"><view class="back-button" @click="back"><text class="back-icon">‹</text></view><text class="heading">下载中心</text><text v-if="rows.length > 0" class="edit" @click="editing = !editing">{{ editing ? '完成' : '管理' }}</text></view>
+    <view class="tabs">
+      <view class="tab" @click="tab = 0"><text class="tab-text" :class="tab == 0 ? 'tab-active' : ''">已下载</text><view v-if="tab == 0" class="indicator"></view></view>
+      <view class="tab" @click="tab = 1"><text class="tab-text" :class="tab == 1 ? 'tab-active' : ''">下载中 ({{ pendingCount }})</text><view v-if="tab == 1" class="indicator"></view></view>
+    </view>
+    <view v-if="error.length > 0" class="error-banner" @click="refresh"><text class="error-text">{{ error }} · 点击重试</text></view>
+    <view v-if="shown.length == 0" class="empty">
+      <view class="download-circle"><text class="download-symbol">↓</text><view class="download-line"></view></view>
+      <text class="empty-text">{{ reading && rows.length == 0 ? '正在读取下载内容' : (tab == 0 ? '暂无下载内容' : '暂无下载任务') }}</text>
+    </view>
+    <scroll-view v-else class="list" :scroll-y="true">
+      <view v-for="row in shown" :key="row.vid" class="download-row">
+        <view class="poster" @click="open(row)"><image v-if="row.cover.length > 0" class="poster-image" :src="row.cover" mode="aspectFill" /><text v-else class="placeholder">▶</text><text class="duration">{{ durationText(row.duration) }}</text></view>
+        <view class="details">
+          <view class="row-top"><text class="video-title" @click="open(row)">{{ row.title }}</text><text v-if="tab == 1" class="size">{{ quality(row.level) }}:{{ size(row.fileSize) }}</text></view>
+          <text v-if="tab == 0" class="finished-size">{{ quality(row.level) }}:{{ size(row.fileSize) }}</text>
+          <view v-else class="progress-row"><view class="track"><view class="progress" :style="'width:' + row.progress + '%'"></view></view><view class="action" @click="toggle(row)"><text class="action-text">{{ busyVid == row.vid ? '…' : (active(row) ? 'Ⅱ' : '▶') }}</text></view></view>
+          <text v-if="tab == 1" class="status">{{ statusText(row) }}</text>
+          <text v-if="editing" class="delete" @click="remove(row)">删除</text>
+        </view>
+      </view>
+      <view :style="'height:' + bottomInset + 'px'"></view>
+    </scroll-view>
+  </view>
+</template>
+<script lang="uts">
+import { PlvDownloadRow, plvReadDownloads, plvPauseDownload, plvResumeDownload, plvRemoveDownload, plvFileSize } from '@/common/plv-downloads.uts'
+import { plvDuration, plvQuality } from '@/common/plv-media-catalog.uts'
+export default {
+  data() { return {rows: [] as PlvDownloadRow[], tab: 0, editing: false, topInset: 0, bottomInset: 0, error: '', reading: false, timer: 0, visible: false, epoch: 0, busyVid: ''} },
+  computed: {
+    shown(): PlvDownloadRow[] { return this.rows.filter((row: PlvDownloadRow): boolean => this.tab == 0 ? row.status == 'finished' : row.status != 'finished') },
+    pendingCount(): number { return this.rows.filter((row: PlvDownloadRow): boolean => row.status != 'finished').length }
+  },
+  onLoad() { const info = uni.getWindowInfo(); this.topInset = info.safeAreaInsets.top; this.bottomInset = info.safeAreaInsets.bottom },
+  onShow() { this.visible = true; this.refresh(); this.timer = setInterval(() => { this.refresh() }, 1000) },
+  onHide() { this.stopPolling() }, onUnload() { this.stopPolling() },
+  methods: {
+    stopPolling() { this.visible = false; this.epoch++; this.reading = false; if (this.timer != 0) clearInterval(this.timer); this.timer = 0 },
+    refresh() {
+      if (!this.visible || this.reading) return
+      const epoch = this.epoch; this.reading = true
+      plvReadDownloads((rows: PlvDownloadRow[], error: string) => { if (epoch != this.epoch) return; this.reading = false; this.error = error; if (error.length == 0) this.rows = rows })
+    },
+    active(row: PlvDownloadRow): boolean { return row.status == 'downloading' || row.status == 'preparing' || row.status == 'ready' },
+    statusText(row: PlvDownloadRow): string {
+      if (row.status == 'failed') return row.error.length > 0 ? row.error : '下载失败，点击重试'
+      if (row.status == 'stopped') return '已暂停 · ' + row.progress + '%'
+      if (row.status == 'preparing' || row.status == 'ready') return '等待下载 · ' + row.progress + '%'
+      if (row.status == 'unknown') return '状态未知，请刷新'
+      return row.progress + '% (' + (row.speed / 1024 / 1024).toFixed(2) + ' M/s)'
+    },
+    toggle(row: PlvDownloadRow) {
+      if (this.busyVid.length > 0) return; this.busyVid = row.vid
+      const done = (error: string) => { this.busyVid = ''; if (error.length > 0) uni.showToast({title: error, icon: 'none'}); this.refresh() }
+      if (this.active(row)) plvPauseDownload(row.vid, done); else plvResumeDownload(row, done)
+    },
+    remove(row: PlvDownloadRow) {
+      uni.showModal({title: '删除下载', content: '删除“' + row.title + '”及其本地文件？', success: (result) => {
+        if (!result.confirm) return
+        plvRemoveDownload(row.vid, (error: string) => { if (error.length > 0) uni.showToast({title: error, icon: 'none'}); this.refresh() })
+      }})
+    },
+    open(row: PlvDownloadRow) { if (this.editing || row.status != 'finished') return; uni.navigateTo({url: '/pages/player-center/player-center?offline=1&vid=' + encodeURIComponent(row.vid)}) },
+    durationText(seconds: number): string { return plvDuration(seconds) }, quality(level: number): string { return plvQuality(level) }, size(bytes: number): string { return plvFileSize(bytes) },
+    back() { uni.navigateBack() }
+  }
+}
+</script>
+<style>
+.page { flex: 1; background-color: #0e273f; }
+.header { height: 48px; flex-direction: row; align-items: center; padding-right: 18px; }
+.back-button { width: 40px; height: 44px; justify-content: center; align-items: center; }
+.back-icon { color: #ffffff; font-size: 36px; }
+.heading { color: #ffffff; font-size: 18px; flex: 1; }
+.edit { color: #94acc1; font-size: 14px; padding: 8px; }
+.tabs { height: 50px; flex-direction: row; padding-left: 14px; }
+.tab { min-width: 110px; height: 50px; align-items: center; justify-content: center; margin-right: 12px; }
+.tab-text { font-size: 16px; color: #91a0af; }
+.tab-active { color: #ffffff; }
+.indicator { position: absolute; bottom: 4px; width: 20px; height: 2px; border-radius: 2px; background-color: #3e74ff; }
+.empty { padding-top: 140px; align-items: center; }
+.download-circle { width: 56px; height: 56px; border: 1px solid #91a4b5; border-radius: 28px; align-items: center; }
+.download-symbol { font-size: 43px; line-height: 45px; color: #91a4b5; }
+.download-line { width: 24px; height: 2px; background-color: #91a4b5; }
+.empty-text { color: #ffffff; font-size: 14px; margin-top: 16px; }
+.list { flex: 1; padding: 4px 16px; }
+.download-row { flex-direction: row; margin-bottom: 14px; min-height: 62px; }
+.poster { width: 106px; height: 60px; border-radius: 2px; background-color: #213d56; justify-content: center; align-items: center; overflow: hidden; }
+.poster-image { width: 100%; height: 100%; }
+.placeholder { color: #a3b0bc; font-size: 20px; }
+.duration { position: absolute; right: 4px; bottom: 4px; color: #ffffff; font-size: 12px; background-color: rgba(0,0,0,0.2); }
+.details { flex: 1; padding-left: 8px; }
+.row-top { flex-direction: row; align-items: center; height: 24px; }
+.video-title { lines: 1; white-space: nowrap; flex: 1; color: #ffffff; font-size: 14px; text-overflow: ellipsis; }
+.size { color: #6f879b; font-size: 10px; margin-left: 4px; }
+.finished-size { color: #6f879b; font-size: 12px; margin-top: 8px; }
+.progress-row { flex-direction: row; height: 20px; align-items: center; }
+.track { flex: 1; height: 4px; border-radius: 2px; background-color: #3a5166; overflow: hidden; }
+.progress { height: 4px; border-radius: 2px; background-color: #3e74ff; }
+.action { width: 28px; height: 32px; align-items: center; justify-content: center; }
+.action-text { color: #ffffff; font-size: 17px; }
+.status { lines: 1; white-space: nowrap; color: #6f879b; font-size: 12px; margin-top: 2px; text-overflow: ellipsis; }
+.delete { color: #f18b8b; font-size: 12px; padding-top: 8px; padding-bottom: 8px; }
+.error-banner { padding: 12px 18px; }
+.error-text { color: #f4bc94; font-size: 13px; }
+</style>

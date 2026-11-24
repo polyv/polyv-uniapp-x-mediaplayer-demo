@@ -1,0 +1,78 @@
+<template>
+  <view class="page">
+    <view v-if="!fullscreen" :style="'height:' + topInset + 'px'"></view>
+    <view class="stage" :style="stageStyle">
+      <plv-media-view ref="media" :vid="selectedVid" :title="selectedTitle" :offline="offline" :fullscreen="fullscreen" :bottom-inset="fullscreen ? bottomInset : 0" :side-inset="fullscreen ? sideInset : 8" @back="goBack" @fullscreen-change="fullscreenChanged" @download="download" @duration-change="durationChanged" />
+    </view>
+    <scroll-view v-show="!fullscreen" class="playlist" :scroll-y="true">
+      <view v-if="offline" class="offline-label"><text class="offline-text">已下载 · 本地播放</text></view>
+      <view v-for="item in videos" :key="item.vid" class="video-row" :class="item.vid == selectedVid ? 'video-selected' : ''" @click="select(item)">
+        <view class="cover-wrap"><image v-if="item.cover.length > 0" class="cover" :src="item.cover" mode="aspectFit" /><text v-else class="cover-placeholder">▶</text></view>
+        <view class="video-info"><text class="video-title">{{ item.title }}</text><text class="video-duration">{{ durationText(item.duration) }}</text></view>
+      </view>
+      <view :style="'height:' + bottomInset + 'px'"></view>
+    </scroll-view>
+  </view>
+</template>
+<script lang="uts">
+import { PlvCatalogItem, plvMediaCatalog, plvDuration, plvQuality } from '@/common/plv-media-catalog.uts'
+import { plvAddDownload, plvReadDownloads, PlvDownloadRow } from '@/common/plv-downloads.uts'
+export default {
+  data() { return {videos: [] as PlvCatalogItem[], selectedVid: '', selectedTitle: '', offline: false, fullscreen: false, topInset: 0, bottomInset: 0, sideInset: 12, width: 0, height: 0, adding: false} },
+  computed: {stageStyle(): string { return 'width:' + this.width + 'px;height:' + (this.fullscreen ? this.height : this.width * 9 / 16) + 'px' }},
+  onLoad(options: OnLoadOptions) {
+    this.resize(); this.offline = options['offline'] == '1'
+    const vid = options['vid'] ?? ''
+    if (this.offline) {
+      plvReadDownloads((rows: PlvDownloadRow[], error: string) => {
+        this.videos = rows.filter((row: PlvDownloadRow): boolean => row.status == 'finished').map((row: PlvDownloadRow): PlvCatalogItem => ({vid: row.vid, title: row.title, cover: row.cover, duration: row.duration}))
+        this.initialSelection(vid)
+        if (error.length > 0) uni.showToast({title: error, icon: 'none'})
+      })
+    } else { this.videos = plvMediaCatalog(); this.initialSelection(vid) }
+  },
+  onResize() { this.resize() },
+  onShow() { this.media()?.activate() },
+  onHide() { this.media()?.suspend() },
+  onBackPress(): boolean { if (!this.fullscreen) return false; this.media()?.toggleFullscreen(); return true },
+  methods: {
+    media(): PlvMediaViewComponentPublicInstance | null { return this.$refs['media'] as PlvMediaViewComponentPublicInstance | null },
+    resize() { const info = uni.getWindowInfo(); this.width = info.windowWidth; this.height = info.windowHeight; this.topInset = info.safeAreaInsets.top; this.bottomInset = info.safeAreaInsets.bottom; this.sideInset = Math.max(16, info.safeAreaInsets.left, info.safeAreaInsets.right) },
+    initialSelection(vid: string) {
+      let item = this.videos.find((row: PlvCatalogItem): boolean => row.vid == vid)
+      if (item == null && !this.offline && vid.length > 0) { item = {vid: vid, title: '当前视频', cover: '', duration: 0}; this.videos.unshift(item) }
+      if (item == null && this.videos.length > 0) item = this.videos[0]
+      if (item != null) this.select(item)
+    },
+    select(item: PlvCatalogItem) { this.selectedTitle = item.title; this.selectedVid = item.vid },
+    durationText(seconds: number): string { return plvDuration(seconds) },
+    durationChanged(seconds: number) { const index = this.videos.findIndex((row: PlvCatalogItem): boolean => row.vid == this.selectedVid); if (index >= 0) this.videos[index].duration = seconds },
+    fullscreenChanged(value: boolean) { this.fullscreen = value; this.resize() },
+    goBack() { uni.navigateBack() },
+    download(levels: number[]) {
+      if (this.adding || this.offline) return
+      const item = this.videos.find((row: PlvCatalogItem): boolean => row.vid == this.selectedVid); if (item == null) return
+      if (levels.length == 0) { uni.showToast({title: '当前视频无可下载清晰度', icon: 'none'}); return }
+      uni.showActionSheet({itemList: levels.map((level: number): string => '下载 · ' + plvQuality(level)), success: (res) => {
+        this.adding = true
+        plvAddDownload(item, levels[res.tapIndex], (error: string) => { this.adding = false; uni.showToast({title: error.length > 0 ? error : '已加入下载中心', icon: 'none'}) })
+      }})
+    }
+  }
+}
+</script>
+<style>
+.page { flex: 1; background-color: #0e273f; }
+.stage { background-color: #000000; }
+.playlist { flex: 1; background-color: #ffffff; }
+.video-row { flex-direction: row; height: 120px; padding: 14px; border-bottom: 1px solid #ededed; }
+.video-selected { background-color: #d2d2d6; }
+.cover-wrap { width: 43%; height: 92px; align-items: center; justify-content: center; }
+.cover { width: 100%; height: 100%; }
+.cover-placeholder { color: #8d99a7; font-size: 28px; }
+.video-info { flex: 1; padding-left: 16px; padding-top: 12px; padding-bottom: 4px; justify-content: space-between; }
+.video-title { lines: 2; font-size: 16px; color: #111111; line-height: 22px; text-overflow: ellipsis; }
+.video-duration { font-size: 13px; color: #8a8a8a; }
+.offline-label { padding: 12px 20px; background-color: #f1f5f9; }
+.offline-text { color: #52677a; font-size: 12px; }
+</style>

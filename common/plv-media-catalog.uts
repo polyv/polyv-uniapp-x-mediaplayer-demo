@@ -1,0 +1,23 @@
+export type PlvCatalogItem = { vid: string, title: string, cover: string, duration: number }
+
+// Replace these public demo entries with videos authorized for your business account.
+export function plvMediaCatalog(): PlvCatalogItem[] {
+  const rows: PlvCatalogItem[] = [
+    {vid: 'e97dbe3e646f8f565c015f361025c51c_e', title: '十周年祝福 · 富德人寿', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e646f8f565c015f361025c51c_0.jpg!l1280Q85', duration: 0},
+    {vid: 'e97dbe3e6492596e7e680c4c7b99ca1b_e', title: '十周年祝福 · 华医网', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/b/e97dbe3e6492596e7e680c4c7b99ca1b_0.jpg!l1280Q85', duration: 0},
+    {vid: 'e97dbe3e64b6dd24f868c16335570343_e', title: '保利威会议纪要与总结', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/3/e97dbe3e64b6dd24f868c16335570343_0.jpg!l1280Q85', duration: 0},
+    {vid: 'e97dbe3e64f6f6d1f75aa6d16a2d128e_e', title: '十周年祝福 · 华为', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/e/e97dbe3e64f6f6d1f75aa6d16a2d128e_0.jpg!l1280Q85', duration: 0},
+    {vid: 'e97dbe3e649c4f6743ca640bda94230c_e', title: '智能答疑数字人', cover: 'https://img.videocc.net/uimage/e/e97dbe3e64/c/e97dbe3e649c4f6743ca640bda94230c_0.jpg!l1280Q85', duration: 0}
+  ]
+  const stored = uni.getStorageSync('plv_play_vid')
+  const vid = stored == null ? '' : ('' + stored).trim()
+  if (vid.length > 0 && rows.findIndex((item: PlvCatalogItem): boolean => item.vid == vid) < 0) rows.unshift({vid: vid, title: '当前配置视频', cover: '', duration: 0})
+  return rows
+}
+
+export function plvDuration(seconds: number): string {
+  if (seconds <= 0) return '--:--'
+  const total = Math.floor(seconds); const h = Math.floor(total / 3600); const m = Math.floor(total % 3600 / 60); const s = total % 60
+  return (h > 0 ? (h < 10 ? '0' : '') + h + ':' : '') + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s
+}
+export function plvQuality(level: number): string { return level == 1 ? '流畅' : (level == 2 ? '高清' : (level == 3 ? '超清' : '自动')) }

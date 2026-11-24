@@ -2,15 +2,21 @@
   "pages": [
     {
       "path": "pages/index/index",
-      "style": { "navigationBarTitleText": "PLV MediaPlayer (uni-app x)" }
+      "style": {
+        "navigationBarTitleText": "PLV MediaPlayer (uni-app x)"
+      }
     },
     {
       "path": "pages/config/config",
-      "style": { "navigationBarTitleText": "播放凭证" }
+      "style": {
+        "navigationBarTitleText": "播放凭证"
+      }
     },
     {
       "path": "pages/player/player",
-      "style": { "navigationBarTitleText": "播放" }
+      "style": {
+        "navigationBarTitleText": "播放"
+      }
     },
     {
       "path": "pages/ext-feed/ext-feed",
@@ -22,6 +28,26 @@
         "disableScroll": true,
         "backgroundColorContent": "#000000",
         "backgroundColor": "#000000"
+      }
+    },
+    {
+      "path": "pages/player-center/player-center",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "播放器中心",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#0e273f",
+        "disableScroll": true
+      }
+    },
+    {
+      "path": "pages/download-center/download-center",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTitleText": "下载中心",
+        "navigationBarTextStyle": "white",
+        "backgroundColor": "#0e273f",
+        "disableScroll": true
       }
     }
   ],
